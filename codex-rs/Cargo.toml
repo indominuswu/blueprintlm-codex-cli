@@ -17,7 +17,6 @@ members = [
     "common",
     "core",
     "exec",
-    "blueprintlm-exec",
     "exec-server",
     "execpolicy",
     "execpolicy-legacy",
@@ -73,7 +72,6 @@ codex-client = { path = "codex-client" }
 codex-common = { path = "common" }
 codex-core = { path = "core" }
 codex-exec = { path = "exec" }
-blueprintlm-exec = { path = "blueprintlm-exec" }
 codex-execpolicy = { path = "execpolicy" }
 codex-feedback = { path = "feedback" }
 codex-file-search = { path = "file-search" }
