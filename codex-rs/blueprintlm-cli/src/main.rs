@@ -1,6 +1,7 @@
 use anyhow::Context;
 use clap::Parser;
 use codex_arg0::arg0_dispatch_or_else;
+use codex_backend_client::Client as BackendClient;
 use codex_cli::login::read_api_key_from_stdin;
 use codex_cli::login::run_login_status;
 use codex_cli::login::run_login_with_api_key;
@@ -62,6 +63,9 @@ enum Subcommand {
 
     /// Remove stored authentication credentials.
     Logout(LogoutCommand),
+
+    /// Fetch current rate limit snapshot and print JSON.
+    GetRateLimits,
 }
 
 #[derive(Debug, Parser)]
@@ -263,6 +267,9 @@ async fn cli_main(_codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<(
             );
             run_logout(logout_cli.config_overrides).await;
         }
+        Subcommand::GetRateLimits => {
+            run_get_rate_limits(root_config_overrides).await?;
+        }
     }
 
     Ok(())
@@ -394,6 +401,28 @@ async fn run_ask(
         println!("{final_message}");
     }
 
+    Ok(())
+}
+
+async fn run_get_rate_limits(root_config_overrides: CliConfigOverrides) -> anyhow::Result<()> {
+    let cli_overrides = root_config_overrides
+        .parse_overrides()
+        .map_err(anyhow::Error::msg)?;
+    let config = Config::load_with_cli_overrides(cli_overrides, ConfigOverrides::default()).await?;
+
+    let auth_manager = AuthManager::shared(
+        config.codex_home.clone(),
+        true,
+        config.cli_auth_credentials_store_mode,
+    );
+    let Some(auth) = auth_manager.auth() else {
+        anyhow::bail!("Not logged in; run `blueprintlm-cli login` first.");
+    };
+
+    let client = BackendClient::from_auth(config.chatgpt_base_url.clone(), &auth).await?;
+    let snapshot = client.get_rate_limits().await?;
+    let json = serde_json::to_string_pretty(&snapshot)?;
+    println!("{json}");
     Ok(())
 }
 
