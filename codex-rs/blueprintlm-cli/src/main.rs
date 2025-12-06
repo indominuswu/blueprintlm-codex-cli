@@ -22,23 +22,31 @@ use codex_cli::login::run_logout;
 use codex_cloud_tasks::Cli as CloudTasksCli;
 use codex_common::CliConfigOverrides;
 use codex_core::AuthManager;
-use codex_core::ConversationManager;
-use codex_core::NewConversation;
+use codex_core::ModelClient;
+use codex_core::Prompt;
+use codex_core::ResponseEvent;
 use codex_core::git_info::get_git_repo_root;
+use codex_core::openai_models::models_manager::ModelsManager;
 use codex_core::rollout::list::Cursor as SessionsCursor;
 use codex_core::rollout::list::get_conversations;
+use codex_core::terminal;
 use codex_execpolicy::ExecPolicyCheckCommand;
-use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::Op;
+use codex_otel::otel_event_manager::OtelEventManager;
+use codex_protocol::ConversationId;
+use codex_protocol::models::ContentItem;
+use codex_protocol::models::ResponseInputItem;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::user_input::UserInput;
 use codex_responses_api_proxy::Args as ResponsesApiProxyArgs;
 use codex_tui::AppExitInfo;
 use codex_tui::Cli as TuiCli;
 use codex_tui::update_action::UpdateAction;
+use futures_util::StreamExt;
 use owo_colors::OwoColorize;
 use std::io::Read;
 use std::path::PathBuf;
+use std::sync::Arc;
 use supports_color::Stream;
 
 mod mcp_cmd;
@@ -176,9 +184,17 @@ struct AskCommand {
     #[arg(value_name = "PROMPT")]
     prompt: String,
 
+    /// Resume an existing session by id instead of starting a new one.
+    #[arg(long = "session-id", value_name = "SESSION_ID")]
+    session_id: Option<String>,
+
     /// Allow running outside a Git repository.
     #[arg(long = "skip-git-repo-check", default_value_t = true)]
     skip_git_repo_check: bool,
+
+    /// Save per-turn prompt payloads for debugging into the Codex home debug directory.
+    #[arg(long = "debug-save-prompts", default_value_t = false, hide = true)]
+    debug_save_prompts: bool,
 
     /// Additional directories that should be writable alongside the primary workspace.
     #[arg(long = "add-dir", value_name = "DIR", value_hint = clap::ValueHint::DirPath)]
@@ -499,59 +515,63 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
             let exit_info = codex_tui::run_main(interactive, codex_linux_sandbox_exe).await?;
             handle_app_exit(exit_info)?;
         }
-        Some(Subcommand::Exec(mut exec_cli)) => {
-            prepend_config_flags(
-                &mut exec_cli.config_overrides,
-                root_config_overrides.clone(),
-            );
-            blueprintlm_exec::run_main(exec_cli, codex_linux_sandbox_exe).await?;
-        }
+        // Some(Subcommand::Exec(mut exec_cli)) => {
+        //     prepend_config_flags(
+        //         &mut exec_cli.config_overrides,
+        //         root_config_overrides.clone(),
+        //     );
+        //     blueprintlm_exec::run_main(exec_cli, codex_linux_sandbox_exe).await?;
+        // }
         Some(Subcommand::Ask(AskCommand {
             prompt,
+            session_id,
             skip_git_repo_check,
+            debug_save_prompts,
             add_dir,
             cwd,
         })) => {
             run_ask(
                 prompt,
+                session_id,
                 skip_git_repo_check,
+                debug_save_prompts,
                 add_dir,
                 cwd,
                 root_config_overrides,
             )
             .await?;
         }
-        Some(Subcommand::Review(review_args)) => {
-            let mut exec_cli = ExecCli::try_parse_from(["blueprintlm-cli"])?;
-            exec_cli.command = Some(ExecCommand::Review(review_args));
-            prepend_config_flags(
-                &mut exec_cli.config_overrides,
-                root_config_overrides.clone(),
-            );
-            blueprintlm_exec::run_main(exec_cli, codex_linux_sandbox_exe).await?;
-        }
-        Some(Subcommand::McpServer) => {
-            codex_mcp_server::run_main(codex_linux_sandbox_exe, root_config_overrides).await?;
-        }
-        Some(Subcommand::Mcp(mut mcp_cli)) => {
-            // Propagate any root-level config overrides (e.g. `-c key=value`).
-            prepend_config_flags(&mut mcp_cli.config_overrides, root_config_overrides.clone());
-            mcp_cli.run().await?;
-        }
-        Some(Subcommand::AppServer(app_server_cli)) => match app_server_cli.subcommand {
-            None => {
-                codex_app_server::run_main(codex_linux_sandbox_exe, root_config_overrides).await?;
-            }
-            Some(AppServerSubcommand::GenerateTs(gen_cli)) => {
-                codex_app_server_protocol::generate_ts(
-                    &gen_cli.out_dir,
-                    gen_cli.prettier.as_deref(),
-                )?;
-            }
-            Some(AppServerSubcommand::GenerateJsonSchema(gen_cli)) => {
-                codex_app_server_protocol::generate_json(&gen_cli.out_dir)?;
-            }
-        },
+        // Some(Subcommand::Review(review_args)) => {
+        //     let mut exec_cli = ExecCli::try_parse_from(["blueprintlm-cli"])?;
+        //     exec_cli.command = Some(ExecCommand::Review(review_args));
+        //     prepend_config_flags(
+        //         &mut exec_cli.config_overrides,
+        //         root_config_overrides.clone(),
+        //     );
+        //     blueprintlm_exec::run_main(exec_cli, codex_linux_sandbox_exe).await?;
+        // }
+        // Some(Subcommand::McpServer) => {
+        //     codex_mcp_server::run_main(codex_linux_sandbox_exe, root_config_overrides).await?;
+        // }
+        // Some(Subcommand::Mcp(mut mcp_cli)) => {
+        //     // Propagate any root-level config overrides (e.g. `-c key=value`).
+        //     prepend_config_flags(&mut mcp_cli.config_overrides, root_config_overrides.clone());
+        //     mcp_cli.run().await?;
+        // }
+        // Some(Subcommand::AppServer(app_server_cli)) => match app_server_cli.subcommand {
+        //     None => {
+        //         codex_app_server::run_main(codex_linux_sandbox_exe, root_config_overrides).await?;
+        //     }
+        //     Some(AppServerSubcommand::GenerateTs(gen_cli)) => {
+        //         codex_app_server_protocol::generate_ts(
+        //             &gen_cli.out_dir,
+        //             gen_cli.prettier.as_deref(),
+        //         )?;
+        //     }
+        //     Some(AppServerSubcommand::GenerateJsonSchema(gen_cli)) => {
+        //         codex_app_server_protocol::generate_json(&gen_cli.out_dir)?;
+        //     }
+        // },
         Some(Subcommand::Sessions(SessionsCommand {
             page_size,
             cursor,
@@ -591,23 +611,23 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
             let json = serde_json::to_string_pretty(&conversations)?;
             println!("{json}");
         }
-        Some(Subcommand::Resume(ResumeCommand {
-            session_id,
-            last,
-            all,
-            config_overrides,
-        })) => {
-            interactive = finalize_resume_interactive(
-                interactive,
-                root_config_overrides.clone(),
-                session_id,
-                last,
-                all,
-                config_overrides,
-            );
-            let exit_info = codex_tui::run_main(interactive, codex_linux_sandbox_exe).await?;
-            handle_app_exit(exit_info)?;
-        }
+        // Some(Subcommand::Resume(ResumeCommand {
+        //     session_id,
+        //     last,
+        //     all,
+        //     config_overrides,
+        // })) => {
+        //     interactive = finalize_resume_interactive(
+        //         interactive,
+        //         root_config_overrides.clone(),
+        //         session_id,
+        //         last,
+        //         all,
+        //         config_overrides,
+        //     );
+        //     let exit_info = codex_tui::run_main(interactive, codex_linux_sandbox_exe).await?;
+        //     handle_app_exit(exit_info)?;
+        // }
         Some(Subcommand::Login(mut login_cli)) => {
             prepend_config_flags(
                 &mut login_cli.config_overrides,
@@ -645,101 +665,100 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
                 root_config_overrides.clone(),
             );
             run_logout(logout_cli.config_overrides).await;
-        }
-        Some(Subcommand::Completion(completion_cli)) => {
-            print_completion(completion_cli);
-        }
-        Some(Subcommand::Cloud(mut cloud_cli)) => {
-            prepend_config_flags(
-                &mut cloud_cli.config_overrides,
-                root_config_overrides.clone(),
-            );
-            codex_cloud_tasks::run_main(cloud_cli, codex_linux_sandbox_exe).await?;
-        }
-        Some(Subcommand::Sandbox(sandbox_args)) => match sandbox_args.cmd {
-            SandboxCommand::Macos(mut seatbelt_cli) => {
-                prepend_config_flags(
-                    &mut seatbelt_cli.config_overrides,
-                    root_config_overrides.clone(),
-                );
-                codex_cli::debug_sandbox::run_command_under_seatbelt(
-                    seatbelt_cli,
-                    codex_linux_sandbox_exe,
-                )
-                .await?;
-            }
-            SandboxCommand::Linux(mut landlock_cli) => {
-                prepend_config_flags(
-                    &mut landlock_cli.config_overrides,
-                    root_config_overrides.clone(),
-                );
-                codex_cli::debug_sandbox::run_command_under_landlock(
-                    landlock_cli,
-                    codex_linux_sandbox_exe,
-                )
-                .await?;
-            }
-            SandboxCommand::Windows(mut windows_cli) => {
-                prepend_config_flags(
-                    &mut windows_cli.config_overrides,
-                    root_config_overrides.clone(),
-                );
-                codex_cli::debug_sandbox::run_command_under_windows(
-                    windows_cli,
-                    codex_linux_sandbox_exe,
-                )
-                .await?;
-            }
-        },
-        Some(Subcommand::Execpolicy(ExecpolicyCommand { sub })) => match sub {
-            ExecpolicySubcommand::Check(cmd) => run_execpolicycheck(cmd)?,
-        },
-        Some(Subcommand::Apply(mut apply_cli)) => {
-            prepend_config_flags(
-                &mut apply_cli.config_overrides,
-                root_config_overrides.clone(),
-            );
-            run_apply_command(apply_cli, None).await?;
-        }
-        Some(Subcommand::ResponsesApiProxy(args)) => {
-            tokio::task::spawn_blocking(move || codex_responses_api_proxy::run_main(args))
-                .await??;
-        }
-        Some(Subcommand::StdioToUds(cmd)) => {
-            let socket_path = cmd.socket_path;
-            tokio::task::spawn_blocking(move || codex_stdio_to_uds::run(socket_path.as_path()))
-                .await??;
-        }
-        Some(Subcommand::Features(FeaturesCli { sub })) => match sub {
-            FeaturesSubcommand::List => {
-                // Respect root-level `-c` overrides plus top-level flags like `--profile`.
-                let mut cli_kv_overrides = root_config_overrides
-                    .parse_overrides()
-                    .map_err(anyhow::Error::msg)?;
+        } // Some(Subcommand::Completion(completion_cli)) => {
+          //     print_completion(completion_cli);
+          // }
+          // Some(Subcommand::Cloud(mut cloud_cli)) => {
+          //     prepend_config_flags(
+          //         &mut cloud_cli.config_overrides,
+          //         root_config_overrides.clone(),
+          //     );
+          //     codex_cloud_tasks::run_main(cloud_cli, codex_linux_sandbox_exe).await?;
+          // }
+          // Some(Subcommand::Sandbox(sandbox_args)) => match sandbox_args.cmd {
+          //     SandboxCommand::Macos(mut seatbelt_cli) => {
+          //         prepend_config_flags(
+          //             &mut seatbelt_cli.config_overrides,
+          //             root_config_overrides.clone(),
+          //         );
+          //         codex_cli::debug_sandbox::run_command_under_seatbelt(
+          //             seatbelt_cli,
+          //             codex_linux_sandbox_exe,
+          //         )
+          //         .await?;
+          //     }
+          //     SandboxCommand::Linux(mut landlock_cli) => {
+          //         prepend_config_flags(
+          //             &mut landlock_cli.config_overrides,
+          //             root_config_overrides.clone(),
+          //         );
+          //         codex_cli::debug_sandbox::run_command_under_landlock(
+          //             landlock_cli,
+          //             codex_linux_sandbox_exe,
+          //         )
+          //         .await?;
+          //     }
+          //     SandboxCommand::Windows(mut windows_cli) => {
+          //         prepend_config_flags(
+          //             &mut windows_cli.config_overrides,
+          //             root_config_overrides.clone(),
+          //         );
+          //         codex_cli::debug_sandbox::run_command_under_windows(
+          //             windows_cli,
+          //             codex_linux_sandbox_exe,
+          //         )
+          //         .await?;
+          //     }
+          // },
+          // Some(Subcommand::Execpolicy(ExecpolicyCommand { sub })) => match sub {
+          //     ExecpolicySubcommand::Check(cmd) => run_execpolicycheck(cmd)?,
+          // },
+          // Some(Subcommand::Apply(mut apply_cli)) => {
+          //     prepend_config_flags(
+          //         &mut apply_cli.config_overrides,
+          //         root_config_overrides.clone(),
+          //     );
+          //     run_apply_command(apply_cli, None).await?;
+          // }
+          // Some(Subcommand::ResponsesApiProxy(args)) => {
+          //     tokio::task::spawn_blocking(move || codex_responses_api_proxy::run_main(args))
+          //         .await??;
+          // }
+          // Some(Subcommand::StdioToUds(cmd)) => {
+          //     let socket_path = cmd.socket_path;
+          //     tokio::task::spawn_blocking(move || codex_stdio_to_uds::run(socket_path.as_path()))
+          //         .await??;
+          // }
+          // Some(Subcommand::Features(FeaturesCli { sub })) => match sub {
+          //     FeaturesSubcommand::List => {
+          //         // Respect root-level `-c` overrides plus top-level flags like `--profile`.
+          //         let mut cli_kv_overrides = root_config_overrides
+          //             .parse_overrides()
+          //             .map_err(anyhow::Error::msg)?;
 
-                // Honor `--search` via the new feature toggle.
-                if interactive.web_search {
-                    cli_kv_overrides.push((
-                        "features.web_search_request".to_string(),
-                        toml::Value::Boolean(true),
-                    ));
-                }
+          //         // Honor `--search` via the new feature toggle.
+          //         if interactive.web_search {
+          //             cli_kv_overrides.push((
+          //                 "features.web_search_request".to_string(),
+          //                 toml::Value::Boolean(true),
+          //             ));
+          //         }
 
-                // Thread through relevant top-level flags (at minimum, `--profile`).
-                let overrides = ConfigOverrides {
-                    config_profile: interactive.config_profile.clone(),
-                    ..Default::default()
-                };
+          //         // Thread through relevant top-level flags (at minimum, `--profile`).
+          //         let overrides = ConfigOverrides {
+          //             config_profile: interactive.config_profile.clone(),
+          //             ..Default::default()
+          //         };
 
-                let config = Config::load_with_cli_overrides(cli_kv_overrides, overrides).await?;
-                for def in codex_core::features::FEATURES.iter() {
-                    let name = def.key;
-                    let stage = stage_str(def.stage);
-                    let enabled = config.features.enabled(def.id);
-                    println!("{name}\t{stage}\t{enabled}");
-                }
-            }
-        },
+          //         let config = Config::load_with_cli_overrides(cli_kv_overrides, overrides).await?;
+          //         for def in codex_core::features::FEATURES.iter() {
+          //             let name = def.key;
+          //             let stage = stage_str(def.stage);
+          //             let enabled = config.features.enabled(def.id);
+          //             println!("{name}\t{stage}\t{enabled}");
+          //         }
+          //     }
+          // },
     }
 
     Ok(())
@@ -837,7 +856,9 @@ fn print_completion(cmd: CompletionCommand) {
 
 async fn run_ask(
     prompt: String,
+    session_id: Option<String>,
     skip_git_repo_check: bool,
+    debug_save_prompts: bool,
     add_dir: Vec<PathBuf>,
     cwd: Option<PathBuf>,
     root_config_overrides: CliConfigOverrides,
@@ -865,52 +886,87 @@ async fn run_ask(
         std::process::exit(1);
     }
 
+    if debug_save_prompts {
+        let debug_dir = config.codex_home.join("debug").join("prompts");
+        // set_var is safe to call here; wrap to satisfy compiler linting.
+        unsafe {
+            std::env::set_var("CODEX_SAVE_PROMPTS_DIR", &debug_dir);
+        }
+    }
+
+    if session_id.is_some() {
+        eprintln!("--session-id is not supported in simplified ask mode; starting a new session.");
+    }
+
     let auth_manager = AuthManager::shared(
         config.codex_home.clone(),
         true,
         config.cli_auth_credentials_store_mode,
     );
-    let conversation_manager = ConversationManager::new(auth_manager, SessionSource::Cli);
-    let NewConversation { conversation, .. } = conversation_manager
-        .new_conversation(config.clone())
-        .await?;
+    let models_manager = ModelsManager::new(auth_manager.clone());
+    let model_family = models_manager.construct_model_family(&config.model, &config);
+    let conversation_id = ConversationId::new();
+    let auth = auth_manager.auth();
+    let otel_event_manager = OtelEventManager::new(
+        conversation_id,
+        config.model.as_str(),
+        model_family.slug.as_str(),
+        auth.as_ref().and_then(|a| a.get_account_id()),
+        auth.as_ref().and_then(|a| a.get_account_email()),
+        auth.as_ref().map(|a| a.mode),
+        config.otel.log_user_prompt,
+        terminal::user_agent(),
+    );
+    let provider = config.model_provider.clone();
+    let client = ModelClient::new(
+        Arc::new(config.clone()),
+        Some(auth_manager),
+        model_family,
+        otel_event_manager,
+        provider,
+        config.model_reasoning_effort,
+        config.model_reasoning_summary,
+        conversation_id,
+        SessionSource::Cli,
+    );
 
-    let op = Op::UserTurn {
-        cwd: config.cwd.clone(),
-        approval_policy: config.approval_policy,
-        sandbox_policy: config.sandbox_policy.clone(),
-        model: config.model.clone(),
-        effort: config.model_reasoning_effort,
-        summary: config.model_reasoning_summary,
-        final_output_json_schema: None,
-        items: vec![UserInput::Text {
-            text: prompt_text.clone(),
-        }],
-    };
-    conversation.submit(op).await?;
+    let response_input: ResponseInputItem = ResponseInputItem::from(vec![UserInput::Text {
+        text: prompt_text.clone(),
+    }]);
+    let response_item: ResponseItem = response_input.into();
+    let mut prompt = Prompt::default();
+    prompt.input = vec![response_item];
 
-    let mut final_message = None;
-    while let Ok(event) = conversation.next_event().await {
-        match event.msg {
-            EventMsg::TaskComplete(done) => {
-                final_message = done.last_agent_message;
+    let mut stream = client.stream(&prompt).await?;
+    let mut final_message = String::new();
+    while let Some(event) = stream.next().await {
+        let event = match event {
+            Ok(ev) => ev,
+            Err(err) => {
+                eprintln!("Stream error: {err}");
                 break;
             }
-            EventMsg::StreamError(err) => {
-                eprintln!("{}", err.message);
-                break;
+        };
+        match event {
+            ResponseEvent::OutputTextDelta(delta) => final_message.push_str(&delta),
+            ResponseEvent::OutputItemDone(item) | ResponseEvent::OutputItemAdded(item) => {
+                if let ResponseItem::Message { role, content, .. } = item
+                    && role == "assistant"
+                {
+                    for ci in content {
+                        if let ContentItem::OutputText { text } = ci {
+                            final_message.push_str(&text);
+                        }
+                    }
+                }
             }
-            EventMsg::Error(err) => eprintln!("{}", err.message),
-            EventMsg::Warning(warn) => eprintln!("{}", warn.message),
-            EventMsg::ShutdownComplete => break,
+            ResponseEvent::Completed { .. } => break,
             _ => {}
         }
     }
 
-    let _ = conversation.submit(Op::Shutdown).await;
-
-    if let Some(msg) = final_message {
-        println!("{msg}");
+    if !final_message.is_empty() {
+        println!("{final_message}");
     }
 
     Ok(())
@@ -929,6 +985,8 @@ mod tests {
         let cli = MultitoolCli::try_parse_from([
             "blueprintlm-cli",
             "ask",
+            "--session-id",
+            "abc",
             "--skip-git-repo-check",
             "-C",
             "/tmp",
@@ -939,17 +997,21 @@ mod tests {
         .expect("parse");
         let Subcommand::Ask(AskCommand {
             prompt,
+            session_id,
             skip_git_repo_check,
             add_dir,
             cwd,
+            debug_save_prompts,
         }) = cli.subcommand.expect("ask present")
         else {
             unreachable!()
         };
         assert_eq!(prompt, "hello");
+        assert_eq!(session_id.as_deref(), Some("abc"));
         assert!(skip_git_repo_check);
         assert_eq!(add_dir, vec![std::path::PathBuf::from("/tmp/foo")]);
         assert_eq!(cwd.as_deref(), Some(std::path::Path::new("/tmp")));
+        assert!(!debug_save_prompts);
     }
 
     fn finalize_from_args(args: &[&str]) -> TuiCli {
