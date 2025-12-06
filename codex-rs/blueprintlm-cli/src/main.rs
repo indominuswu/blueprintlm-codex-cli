@@ -16,7 +16,6 @@ use codex_core::Prompt;
 use codex_core::ResponseEvent;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
-use codex_core::git_info::get_git_repo_root;
 use codex_core::openai_models::models_manager::ModelsManager;
 use codex_core::rollout::list::Cursor as SessionsCursor;
 use codex_core::rollout::list::get_conversations;
@@ -77,10 +76,6 @@ struct AskCommand {
     /// Resume an existing session by id instead of starting a new one.
     #[arg(long = "session-id", value_name = "SESSION_ID")]
     session_id: Option<String>,
-
-    /// Allow running outside a Git repository.
-    #[arg(long = "skip-git-repo-check", default_value_t = true)]
-    skip_git_repo_check: bool,
 
     /// Save per-turn prompt payloads for debugging into the Codex home debug directory.
     #[arg(long = "debug-save-prompts", default_value_t = false, hide = true)]
@@ -174,7 +169,6 @@ async fn cli_main(_codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<(
         Subcommand::Ask(AskCommand {
             prompt,
             session_id,
-            skip_git_repo_check,
             debug_save_prompts,
             add_dir,
             cwd,
@@ -182,7 +176,6 @@ async fn cli_main(_codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<(
             run_ask(
                 prompt,
                 session_id,
-                skip_git_repo_check,
                 debug_save_prompts,
                 add_dir,
                 cwd,
@@ -289,7 +282,6 @@ fn prepend_config_flags(
 async fn run_ask(
     prompt: String,
     session_id: Option<String>,
-    skip_git_repo_check: bool,
     debug_save_prompts: bool,
     add_dir: Vec<PathBuf>,
     cwd: Option<PathBuf>,
@@ -312,11 +304,6 @@ async fn run_ask(
         ..Default::default()
     };
     let config = Config::load_with_cli_overrides(cli_overrides, config_overrides).await?;
-
-    if !skip_git_repo_check && get_git_repo_root(&config.cwd).is_none() {
-        eprintln!("Not inside a trusted directory and --skip-git-repo-check was not specified.");
-        std::process::exit(1);
-    }
 
     if debug_save_prompts {
         let debug_dir = config.codex_home.join("debug").join("prompts");
@@ -438,7 +425,6 @@ mod tests {
             "ask",
             "--session-id",
             "abc",
-            "--skip-git-repo-check",
             "-C",
             "/tmp",
             "--add-dir",
@@ -449,7 +435,6 @@ mod tests {
         let Subcommand::Ask(AskCommand {
             prompt,
             session_id,
-            skip_git_repo_check,
             add_dir,
             cwd,
             debug_save_prompts,
@@ -459,7 +444,6 @@ mod tests {
         };
         assert_eq!(prompt, "hello");
         assert_eq!(session_id.as_deref(), Some("abc"));
-        assert!(skip_git_repo_check);
         assert_eq!(add_dir, vec![std::path::PathBuf::from("/tmp/foo")]);
         assert_eq!(cwd.as_deref(), Some(std::path::Path::new("/tmp")));
         assert!(!debug_save_prompts);
