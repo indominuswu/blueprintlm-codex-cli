@@ -29,6 +29,7 @@ use codex_protocol::protocol::SessionSource;
 use codex_protocol::user_input::UserInput;
 use futures_util::StreamExt;
 use serde::Serialize;
+use std::env;
 use std::io::Read;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -89,6 +90,15 @@ struct AskCommand {
     /// Tell the agent to use the specified directory as its working root.
     #[clap(long = "cd", short = 'C', value_name = "DIR")]
     cwd: Option<PathBuf>,
+
+    /// Trigger a synthetic stream error instead of calling the API (debug only).
+    #[arg(
+        long = "debug-stream-error",
+        value_name = "ERR_KIND",
+        hide = true,
+        help = "Trigger a synthetic stream error for testing (internal)"
+    )]
+    debug_stream_error: Option<String>,
 }
 
 #[derive(Debug, Parser)]
@@ -173,6 +183,7 @@ async fn cli_main(_codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<(
             debug_save_prompts,
             add_dir,
             cwd,
+            debug_stream_error,
         }) => {
             run_ask(
                 prompt,
@@ -180,6 +191,7 @@ async fn cli_main(_codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<(
                 debug_save_prompts,
                 add_dir,
                 cwd,
+                debug_stream_error,
                 root_config_overrides,
             )
             .await?;
@@ -293,6 +305,7 @@ async fn run_ask(
     debug_save_prompts: bool,
     add_dir: Vec<PathBuf>,
     cwd: Option<PathBuf>,
+    debug_stream_error: Option<String>,
     root_config_overrides: CliConfigOverrides,
 ) -> anyhow::Result<()> {
     let mut stdin_buf = String::new();
@@ -364,9 +377,31 @@ async fn run_ask(
     let mut prompt = Prompt::default();
     prompt.input = vec![response_item];
 
+    let previous_debug_stream_error = if debug_stream_error.is_some() {
+        env::var("CODEX_DEBUG_STREAM_ERROR").ok()
+    } else {
+        None
+    };
+    if let Some(kind) = debug_stream_error.clone() {
+        unsafe {
+            env::set_var("CODEX_DEBUG_STREAM_ERROR", kind);
+        }
+    }
+
     let mut stream = match client.stream(&prompt).await {
         Ok(stream) => stream,
         Err(err) => {
+            if debug_stream_error.is_some() {
+                if let Some(prev) = previous_debug_stream_error {
+                    unsafe {
+                        env::set_var("CODEX_DEBUG_STREAM_ERROR", prev);
+                    }
+                } else {
+                    unsafe {
+                        env::remove_var("CODEX_DEBUG_STREAM_ERROR");
+                    }
+                }
+            }
             let response = AskResponse {
                 success: false,
                 output: None,
@@ -377,6 +412,17 @@ async fn run_ask(
             return Ok(());
         }
     };
+    if debug_stream_error.is_some() {
+        if let Some(prev) = previous_debug_stream_error {
+            unsafe {
+                env::set_var("CODEX_DEBUG_STREAM_ERROR", prev);
+            }
+        } else {
+            unsafe {
+                env::remove_var("CODEX_DEBUG_STREAM_ERROR");
+            }
+        }
+    }
     let mut final_message = String::new();
     let mut stream_error = None;
     while let Some(event) = stream.next().await {
@@ -466,6 +512,7 @@ mod tests {
             add_dir,
             cwd,
             debug_save_prompts,
+            debug_stream_error,
         }) = cli.subcommand
         else {
             unreachable!()
@@ -475,5 +522,6 @@ mod tests {
         assert_eq!(add_dir, vec![std::path::PathBuf::from("/tmp/foo")]);
         assert_eq!(cwd.as_deref(), Some(std::path::Path::new("/tmp")));
         assert!(!debug_save_prompts);
+        assert!(debug_stream_error.is_none());
     }
 }
