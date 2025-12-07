@@ -14,7 +14,7 @@
 //! keystore that always encrypts secrets when they are transferred across the bus. If DBus isn't installed the keystore will fall back to the json
 //! file because we don't use the "vendored" feature.
 //!
-//! If the keyring is not available or fails, we fall back to CODEX_HOME/.credentials.json which is consistent with other coding CLI agents.
+//! If the keyring is not available or fails, we fall back to BLUEPRINTLM_HOME/.credentials.json which is consistent with other coding CLI agents.
 
 use anyhow::Context;
 use anyhow::Error;
@@ -70,7 +70,7 @@ pub enum OAuthCredentialsStoreMode {
     /// Credentials stored in the keyring will only be readable by Codex unless the user explicitly grants access via OS-level keyring access.
     #[default]
     Auto,
-    /// CODEX_HOME/.credentials.json
+    /// BLUEPRINTLM_HOME/.credentials.json
     /// This file will be readable to Codex and other applications running as the same user.
     File,
     /// Keyring when available, otherwise fail.
@@ -625,9 +625,9 @@ mod tests {
                 .get_or_init(Mutex::default)
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            let dir = tempdir().expect("create CODEX_HOME temp dir");
+            let dir = tempdir().expect("create BLUEPRINTLM_HOME temp dir");
             unsafe {
-                std::env::set_var("CODEX_HOME", dir.path());
+                std::env::set_var("BLUEPRINTLM_HOME", dir.path());
             }
             Self {
                 _guard: guard,
@@ -639,7 +639,7 @@ mod tests {
     impl Drop for TempCodexHome {
         fn drop(&mut self) {
             unsafe {
-                std::env::remove_var("CODEX_HOME");
+                std::env::remove_var("BLUEPRINTLM_HOME");
             }
         }
     }

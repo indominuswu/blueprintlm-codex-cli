@@ -6,19 +6,16 @@ use std::path::PathBuf;
 ///
 ///
 /// Returns the path to the Codex configuration directory, which can be
-/// specified by the `CODEX_HOME` environment variable. If not set, defaults to
-/// `~/.codex`.
+/// specified by the `BLUEPRINTLM_HOME` environment variable. If not set,
+/// defaults to `~/.blueprintlm`.
 ///
-/// - If `CODEX_HOME` is set, the value will be canonicalized and this
+/// - If the env override is set, the value will be canonicalized and this
 ///   function will Err if the path does not exist.
-/// - If `CODEX_HOME` is not set, this function does not verify that the
-///   directory exists.
+/// - If no override is set, this function does not verify that the directory
+///   exists.
 pub(crate) fn find_codex_home() -> std::io::Result<PathBuf> {
-    // Honor the `CODEX_HOME` environment variable when it is set to allow users
-    // (and tests) to override the default location.
-    if let Ok(val) = std::env::var("CODEX_HOME")
-        && !val.is_empty()
-    {
+    // Honor env overrides to allow users (and tests) to override the default location.
+    if let Some(val) = std::env::var_os("BLUEPRINTLM_HOME").filter(|v| !v.is_empty()) {
         return PathBuf::from(val).canonicalize();
     }
 
@@ -28,6 +25,6 @@ pub(crate) fn find_codex_home() -> std::io::Result<PathBuf> {
             "Could not find home directory",
         )
     })?;
-    p.push(".codex");
+    p.push(".blueprintlm");
     Ok(p)
 }

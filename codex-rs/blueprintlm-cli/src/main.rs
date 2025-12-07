@@ -30,9 +30,12 @@ use codex_protocol::user_input::UserInput;
 use futures_util::StreamExt;
 use serde::Serialize;
 use std::env;
+use std::fs;
 use std::io::Read;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 
 /// Codex CLI
 #[derive(Debug, Parser)]
@@ -351,6 +354,7 @@ async fn run_ask(
     );
     let models_manager = ModelsManager::new(auth_manager.clone());
     let model_family = models_manager.construct_model_family(&config.model, &config);
+    let model_family_for_client = model_family.clone();
     let conversation_id = ConversationId::new();
     let auth = auth_manager.auth();
     let otel_event_manager = OtelEventManager::new(
@@ -367,7 +371,7 @@ async fn run_ask(
     let client = ModelClient::new(
         Arc::new(config.clone()),
         Some(auth_manager),
-        model_family,
+        model_family_for_client,
         otel_event_manager,
         provider,
         config.model_reasoning_effort,
@@ -382,6 +386,43 @@ async fn run_ask(
     let response_item: ResponseItem = response_input.into();
     let mut prompt = Prompt::default();
     prompt.input = vec![response_item];
+
+    if debug_save_prompts {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default();
+        let seconds = i128::from(timestamp.as_secs());
+        let millis = i128::from(timestamp.subsec_millis());
+        let path = config
+            .codex_home
+            .join("debug")
+            .join("prompts")
+            .join(format!(
+                "prompt-{conversation_id}-{seconds}-{millis:03}.json"
+            ));
+        if let Some(parent) = path.parent() {
+            if let Err(err) = fs::create_dir_all(parent) {
+                eprintln!("Failed to create prompt debug directory: {err}");
+            } else {
+                let payload = serde_json::json!({
+                    "input": prompt.get_formatted_input(),
+                    "instructions": prompt.get_full_instructions(&model_family),
+                    "tools": prompt.tools().to_vec(),
+                    "parallel_tool_calls": prompt.parallel_tool_calls(),
+                });
+                match serde_json::to_string_pretty(&payload) {
+                    Ok(serialized) => {
+                        if let Err(err) = fs::write(&path, serialized) {
+                            eprintln!("Failed to write prompt debug file: {err}");
+                        }
+                    }
+                    Err(err) => {
+                        eprintln!("Failed to serialize prompt debug payload: {err}");
+                    }
+                }
+            }
+        }
+    }
 
     let previous_debug_stream_error = if debug_stream_error.is_some() {
         env::var("CODEX_DEBUG_STREAM_ERROR").ok()

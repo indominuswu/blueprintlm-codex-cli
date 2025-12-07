@@ -4,7 +4,7 @@ Codex uses [`AGENTS.md`](https://agents.md/) files to gather helpful guidance be
 
 ## Global Instructions (`~/.codex`)
 
-- Codex looks for global guidance in your Codex home directory (usually `~/.codex`; set `CODEX_HOME` to change it). For a quick overview, see the [Memory with AGENTS.md section](../docs/getting-started.md#memory-with-agentsmd) in the getting started guide.
+- Codex looks for global guidance in your Codex home directory (usually `~/.blueprintlm`; set `BLUEPRINTLM_HOME` to change it). For a quick overview, see the [Memory with AGENTS.md section](../docs/getting-started.md#memory-with-agentsmd) in the getting started guide.
 - If an `AGENTS.override.md` file exists there, it takes priority. If not, Codex falls back to `AGENTS.md`.
 - Only the first non-empty file is used. Other filenames, such as `instructions.md`, have no effect unless Codex is specifically instructed to use them.
 - Whatever Codex finds here stays active for the whole session, and Codex combines it with any project-specific instructions it discovers.

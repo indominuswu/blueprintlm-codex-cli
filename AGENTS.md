@@ -59,4 +59,4 @@ Run `just fmt` (in `codex-rs` directory) automatically after making Rust code ch
 - For error-handling tests without hitting the API, use `--debug-stream-error <kind>` or set `CODEX_DEBUG_STREAM_ERROR=<kind>` to inject a single stream error. Supported: `context_window`, `quota_exceeded`, `usage_not_included`, `stream_retry`, `unexpected_status`, `retry_limit`, `fatal` (unknown values become fatal).
 - After Rust edits in `codex-rs`, run `just fmt`, then `just fix -p blueprintlm-cli` (or the crate you touched), then `cargo test -p blueprintlm-cli` (plus broader suites if common/core/protocol changed).
 - Default originator/user-agent prefix is `codex_cli_rs`; if you override via `CODEX_INTERNAL_ORIGINATOR_OVERRIDE`, reset it before tests that assert the default UA.
-- `--debug-save-prompts` on `ask` saves turn prompts to `$CODEX_HOME/debug/prompts` (via `CODEX_SAVE_PROMPTS_DIR`); only point it at trusted paths.
+- `--debug-save-prompts` on `ask` saves turn prompts to `$BLUEPRINTLM_HOME/debug/prompts` (via `CODEX_SAVE_PROMPTS_DIR`); only point it at trusted paths.

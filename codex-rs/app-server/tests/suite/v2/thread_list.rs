@@ -23,7 +23,7 @@ async fn thread_list_basic_empty() -> Result<()> {
     let mut mcp = McpProcess::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
-    // List threads in an empty CODEX_HOME; should return an empty page with nextCursor: null.
+    // List threads in an empty BLUEPRINTLM_HOME; should return an empty page with nextCursor: null.
     let list_id = mcp
         .send_thread_list_request(ThreadListParams {
             cursor: None,

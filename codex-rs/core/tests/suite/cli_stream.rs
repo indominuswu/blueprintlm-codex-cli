@@ -41,6 +41,7 @@ async fn chat_mode_stream_cli() {
         .await;
 
     let home = TempDir::new().unwrap();
+    let home_path = home.path().to_path_buf();
     let provider_override = format!(
         "model_providers.mock={{ name = \"mock\", base_url = \"{}/v1\", env_key = \"PATH\", wire_api = \"chat\" }}",
         server.uri()
@@ -56,7 +57,7 @@ async fn chat_mode_stream_cli() {
         .arg("-C")
         .arg(env!("CARGO_MANIFEST_DIR"))
         .arg("hello?");
-    cmd.env("CODEX_HOME", home.path())
+    cmd.env("BLUEPRINTLM_HOME", &home_path)
         .env("OPENAI_API_KEY", "dummy")
         .env("OPENAI_BASE_URL", format!("{}/v1", server.uri()));
 
@@ -74,7 +75,7 @@ async fn chat_mode_stream_cli() {
     // Verify a new session rollout was created and is discoverable via list_conversations
     let provider_filter = vec!["mock".to_string()];
     let page = RolloutRecorder::list_conversations(
-        home.path(),
+        &home_path,
         10,
         None,
         &[],
@@ -128,6 +129,7 @@ async fn exec_cli_applies_experimental_instructions_file() {
     );
 
     let home = TempDir::new().unwrap();
+    let home_path = home.path().to_path_buf();
     let bin = cargo_bin("codex");
     let mut cmd = AssertCommand::new(bin);
     cmd.arg("exec")
@@ -143,7 +145,7 @@ async fn exec_cli_applies_experimental_instructions_file() {
         .arg("-C")
         .arg(env!("CARGO_MANIFEST_DIR"))
         .arg("hello?\n");
-    cmd.env("CODEX_HOME", home.path())
+    cmd.env("BLUEPRINTLM_HOME", &home_path)
         .env("OPENAI_API_KEY", "dummy")
         .env("OPENAI_BASE_URL", format!("{}/v1", server.uri()));
 
@@ -182,6 +184,7 @@ async fn responses_api_stream_cli() {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/cli_responses_fixture.sse");
 
     let home = TempDir::new().unwrap();
+    let home_path = home.path().to_path_buf();
     let bin = cargo_bin("codex");
     let mut cmd = AssertCommand::new(bin);
     cmd.arg("exec")
@@ -189,7 +192,7 @@ async fn responses_api_stream_cli() {
         .arg("-C")
         .arg(env!("CARGO_MANIFEST_DIR"))
         .arg("hello?");
-    cmd.env("CODEX_HOME", home.path())
+    cmd.env("BLUEPRINTLM_HOME", &home_path)
         .env("OPENAI_API_KEY", "dummy")
         .env("CODEX_RS_SSE_FIXTURE", fixture)
         .env("OPENAI_BASE_URL", "http://unused.local");
@@ -208,6 +211,7 @@ async fn integration_creates_and_checks_session_file() -> anyhow::Result<()> {
 
     // 1. Temp home so we read/write isolated session files.
     let home = TempDir::new()?;
+    let home_path = home.path().to_path_buf();
 
     // 2. Unique marker we'll look for in the session log.
     let marker = format!("integration-test-{}", Uuid::new_v4());
@@ -225,7 +229,7 @@ async fn integration_creates_and_checks_session_file() -> anyhow::Result<()> {
         .arg("-C")
         .arg(env!("CARGO_MANIFEST_DIR"))
         .arg(&prompt);
-    cmd.env("CODEX_HOME", home.path())
+    cmd.env("BLUEPRINTLM_HOME", &home_path)
         .env("OPENAI_API_KEY", "dummy")
         .env("CODEX_RS_SSE_FIXTURE", &fixture)
         // Required for CLI arg parsing even though fixture short-circuits network usage.
@@ -239,7 +243,7 @@ async fn integration_creates_and_checks_session_file() -> anyhow::Result<()> {
     );
 
     // Wait for sessions dir to appear.
-    let sessions_dir = home.path().join("sessions");
+    let sessions_dir = home_path.join("sessions");
     fs_wait::wait_for_path_exists(&sessions_dir, Duration::from_secs(5)).await?;
 
     // Find the session file that contains `marker`.
@@ -348,7 +352,7 @@ async fn integration_creates_and_checks_session_file() -> anyhow::Result<()> {
         .arg(&prompt2)
         .arg("resume")
         .arg("--last");
-    cmd2.env("CODEX_HOME", home.path())
+    cmd2.env("BLUEPRINTLM_HOME", &home_path)
         .env("OPENAI_API_KEY", "dummy")
         .env("CODEX_RS_SSE_FIXTURE", &fixture)
         .env("OPENAI_BASE_URL", "http://unused.local");

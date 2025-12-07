@@ -10,7 +10,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use uuid::Uuid;
 
-/// Create a minimal rollout file under `CODEX_HOME/sessions/YYYY/MM/DD/`.
+/// Create a minimal rollout file under `BLUEPRINTLM_HOME/sessions/YYYY/MM/DD/`.
 ///
 /// - `filename_ts` is the filename timestamp component in `YYYY-MM-DDThh-mm-ss` format.
 /// - `meta_rfc3339` is the envelope timestamp used in JSON lines.

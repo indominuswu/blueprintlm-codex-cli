@@ -177,7 +177,7 @@ pub struct Config {
     /// keyring: Use an OS-specific keyring service.
     ///          Credentials stored in the keyring will only be readable by Codex unless the user explicitly grants access via OS-level keyring access.
     ///          https://github.com/openai/codex/blob/main/codex-rs/rmcp-client/src/oauth.rs#L2
-    /// file: CODEX_HOME/.credentials.json
+    /// file: BLUEPRINTLM_HOME/.credentials.json
     ///       This file will be readable to Codex and other applications running as the same user.
     /// auto (default): keyring if available, otherwise file.
     pub mcp_oauth_credentials_store_mode: OAuthCredentialsStoreMode,
@@ -195,8 +195,8 @@ pub struct Config {
     /// Token budget applied when storing tool/function outputs in the context manager.
     pub tool_output_token_limit: Option<usize>,
 
-    /// Directory containing all Codex state (defaults to `~/.codex` but can be
-    /// overridden by the `CODEX_HOME` environment variable).
+    /// Directory containing all Codex state (defaults to `~/.blueprintlm` but can be
+    /// overridden by the `BLUEPRINTLM_HOME` environment variable).
     pub codex_home: PathBuf,
 
     /// Settings that govern if and what will be written to `~/.codex/history.jsonl`.
@@ -465,7 +465,7 @@ pub(crate) fn set_project_trust_level_inner(
     Ok(())
 }
 
-/// Patch `CODEX_HOME/config.toml` project state to set trust level.
+/// Patch `BLUEPRINTLM_HOME/config.toml` project state to set trust level.
 /// Use with caution.
 pub fn set_project_trust_level(
     codex_home: &Path,
@@ -1332,14 +1332,18 @@ fn default_review_model() -> String {
 }
 
 /// Returns the path to the Codex configuration directory, which can be
-/// specified by the `CODEX_HOME` environment variable. If not set, defaults to
-/// `~/.codex`.
+/// specified by the `BLUEPRINTLM_HOME` environment variable. If not set,
+/// defaults to `~/.blueprintlm`.
 ///
-/// - If `CODEX_HOME` is set, the value will be canonicalized and this
+/// - If the env override is set, the value will be canonicalized and this
 ///   function will Err if the path does not exist.
-/// - If `CODEX_HOME` is not set, this function does not verify that the
-///   directory exists.
+/// - If no override is set, this function does not verify that the directory
+///   exists.
 pub fn find_codex_home() -> std::io::Result<PathBuf> {
+    if let Some(dir) = std::env::var_os("BLUEPRINTLM_HOME").filter(|v| !v.is_empty()) {
+        return PathBuf::from(dir).canonicalize();
+    }
+
     let home = home_dir().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::NotFound,

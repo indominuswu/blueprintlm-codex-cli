@@ -20,7 +20,7 @@ prefix_rule(
     )?;
 
     let output = Command::cargo_bin("codex")?
-        .env("CODEX_HOME", codex_home.path())
+        .env("BLUEPRINTLM_HOME", codex_home.path())
         .args([
             "execpolicy",
             "check",
