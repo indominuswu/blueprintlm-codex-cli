@@ -28,6 +28,7 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::user_input::UserInput;
 use futures_util::StreamExt;
+use serde::Serialize;
 use std::io::Read;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -279,6 +280,13 @@ fn prepend_config_flags(
         .splice(0..0, cli_config_overrides.raw_overrides);
 }
 
+#[derive(Serialize)]
+struct AskResponse {
+    success: bool,
+    output: Option<String>,
+    error: Option<String>,
+}
+
 async fn run_ask(
     prompt: String,
     session_id: Option<String>,
@@ -356,37 +364,57 @@ async fn run_ask(
     let mut prompt = Prompt::default();
     prompt.input = vec![response_item];
 
-    let mut stream = client.stream(&prompt).await?;
+    let mut stream = match client.stream(&prompt).await {
+        Ok(stream) => stream,
+        Err(err) => {
+            let response = AskResponse {
+                success: false,
+                output: None,
+                error: Some(err.to_string()),
+            };
+            let json = serde_json::to_string_pretty(&response)?;
+            println!("{json}");
+            return Ok(());
+        }
+    };
     let mut final_message = String::new();
+    let mut stream_error = None;
     while let Some(event) = stream.next().await {
-        let event = match event {
-            Ok(ev) => ev,
-            Err(err) => {
-                eprintln!("Stream error: {err}");
-                break;
-            }
-        };
         match event {
-            ResponseEvent::OutputTextDelta(delta) => final_message.push_str(&delta),
-            ResponseEvent::OutputItemDone(item) | ResponseEvent::OutputItemAdded(item) => {
-                if let ResponseItem::Message { role, content, .. } = item
-                    && role == "assistant"
-                {
-                    for ci in content {
-                        if let ContentItem::OutputText { text } = ci {
-                            final_message.push_str(&text);
+            Ok(ev) => match ev {
+                ResponseEvent::OutputTextDelta(delta) => final_message.push_str(&delta),
+                ResponseEvent::OutputItemDone(item) | ResponseEvent::OutputItemAdded(item) => {
+                    if let ResponseItem::Message { role, content, .. } = item
+                        && role == "assistant"
+                    {
+                        for ci in content {
+                            if let ContentItem::OutputText { text } = ci {
+                                final_message.push_str(&text);
+                            }
                         }
                     }
                 }
+                ResponseEvent::Completed { .. } => break,
+                _ => {}
+            },
+            Err(err) => {
+                stream_error = Some(err.to_string());
+                break;
             }
-            ResponseEvent::Completed { .. } => break,
-            _ => {}
         }
     }
 
-    if !final_message.is_empty() {
-        println!("{final_message}");
-    }
+    let response = AskResponse {
+        success: stream_error.is_none(),
+        output: if final_message.is_empty() {
+            None
+        } else {
+            Some(final_message)
+        },
+        error: stream_error,
+    };
+    let json = serde_json::to_string_pretty(&response)?;
+    println!("{json}");
 
     Ok(())
 }

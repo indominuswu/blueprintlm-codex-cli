@@ -652,6 +652,7 @@ dependencies = [
  "codex-protocol",
  "futures-util",
  "pretty_assertions",
+ "serde",
  "serde_json",
 ]
 
