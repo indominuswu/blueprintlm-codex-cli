@@ -7,6 +7,7 @@ mod plan;
 mod read_file;
 mod shell;
 mod test_sync;
+mod ue5;
 mod unified_exec;
 mod view_image;
 
@@ -22,5 +23,6 @@ pub use read_file::ReadFileHandler;
 pub use shell::ShellCommandHandler;
 pub use shell::ShellHandler;
 pub use test_sync::TestSyncHandler;
+pub use ue5::Ue5ProjectDirHandler;
 pub use unified_exec::UnifiedExecHandler;
 pub use view_image::ViewImageHandler;

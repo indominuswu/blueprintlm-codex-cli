@@ -125,10 +125,10 @@ impl ModelClient {
     /// For Chat providers, the underlying stream is optionally aggregated
     /// based on the `show_raw_agent_reasoning` flag in the config.
     pub async fn stream(&self, prompt: &Prompt) -> Result<ResponseStream> {
-        if let Ok(kind) = env::var("CODEX_DEBUG_STREAM_ERROR") {
-            if !kind.is_empty() {
-                return Ok(Self::make_debug_error_stream(kind));
-            }
+        if let Ok(kind) = env::var("CODEX_DEBUG_STREAM_ERROR")
+            && !kind.is_empty()
+        {
+            return Ok(Self::make_debug_error_stream(kind));
         }
 
         match self.provider.wire_api {

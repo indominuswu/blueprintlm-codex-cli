@@ -464,6 +464,31 @@ fn create_test_sync_tool() -> ToolSpec {
     })
 }
 
+fn create_ue5_project_dir_tool() -> ToolSpec {
+    let mut properties = BTreeMap::new();
+    properties.insert(
+        "project_dir".to_string(),
+        JsonSchema::String {
+            description: Some(
+                "Optional UE5 project directory hint. Actual resolution happens in the UE plugin."
+                    .to_string(),
+            ),
+        },
+    );
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: "ue5_project_dir".to_string(),
+        description: "Declares the UE5 project directory resolver. Codex only surfaces the tool; the UE plugin executes it."
+            .to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: None,
+            additional_properties: Some(false.into()),
+        },
+    })
+}
+
 fn create_grep_files_tool() -> ToolSpec {
     let mut properties = BTreeMap::new();
     properties.insert(
@@ -970,6 +995,7 @@ pub(crate) fn build_specs(
     use crate::tools::handlers::ShellCommandHandler;
     use crate::tools::handlers::ShellHandler;
     use crate::tools::handlers::TestSyncHandler;
+    use crate::tools::handlers::Ue5ProjectDirHandler;
     use crate::tools::handlers::UnifiedExecHandler;
     use crate::tools::handlers::ViewImageHandler;
     use std::sync::Arc;
@@ -984,6 +1010,7 @@ pub(crate) fn build_specs(
     let mcp_handler = Arc::new(McpHandler);
     let mcp_resource_handler = Arc::new(McpResourceHandler);
     let shell_command_handler = Arc::new(ShellCommandHandler);
+    let ue5_project_dir_handler = Arc::new(Ue5ProjectDirHandler);
 
     match &config.shell_type {
         ConfigShellToolType::Default => {
@@ -1023,6 +1050,8 @@ pub(crate) fn build_specs(
 
     builder.push_spec(PLAN_TOOL.clone());
     builder.register_handler("update_plan", plan_handler);
+    builder.push_spec_with_parallel_support(create_ue5_project_dir_tool(), true);
+    builder.register_handler("ue5_project_dir", ue5_project_dir_handler);
 
     if let Some(apply_patch_tool_type) = &config.apply_patch_tool_type {
         match apply_patch_tool_type {
@@ -1236,6 +1265,7 @@ mod tests {
             create_list_mcp_resource_templates_tool(),
             create_read_mcp_resource_tool(),
             PLAN_TOOL.clone(),
+            create_ue5_project_dir_tool(),
             create_apply_patch_freeform_tool(),
             ToolSpec::WebSearch {},
             create_view_image_tool(),
@@ -1280,6 +1310,7 @@ mod tests {
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
                 "update_plan",
+                "ue5_project_dir",
                 "apply_patch",
                 "view_image",
             ],
@@ -1297,6 +1328,7 @@ mod tests {
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
                 "update_plan",
+                "ue5_project_dir",
                 "apply_patch",
                 "view_image",
             ],
@@ -1317,6 +1349,7 @@ mod tests {
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
                 "update_plan",
+                "ue5_project_dir",
                 "apply_patch",
                 "web_search",
                 "view_image",
@@ -1338,6 +1371,7 @@ mod tests {
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
                 "update_plan",
+                "ue5_project_dir",
                 "apply_patch",
                 "web_search",
                 "view_image",
@@ -1356,6 +1390,7 @@ mod tests {
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
                 "update_plan",
+                "ue5_project_dir",
                 "view_image",
             ],
         );
@@ -1372,6 +1407,7 @@ mod tests {
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
                 "update_plan",
+                "ue5_project_dir",
                 "apply_patch",
                 "view_image",
             ],
@@ -1389,6 +1425,7 @@ mod tests {
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
                 "update_plan",
+                "ue5_project_dir",
                 "view_image",
             ],
         );
@@ -1405,6 +1442,7 @@ mod tests {
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
                 "update_plan",
+                "ue5_project_dir",
                 "apply_patch",
                 "view_image",
             ],
@@ -1423,6 +1461,7 @@ mod tests {
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
                 "update_plan",
+                "ue5_project_dir",
                 "apply_patch",
                 "view_image",
             ],
@@ -1443,6 +1482,7 @@ mod tests {
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
                 "update_plan",
+                "ue5_project_dir",
                 "web_search",
                 "view_image",
             ],
