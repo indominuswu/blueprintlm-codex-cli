@@ -57,6 +57,8 @@ Notes:
 
 ## Model selection
 
+To see the built-in model presets for your install, run `blueprintlm-cli models` (prints JSON).
+
 ### model
 
 The model that Codex should use.

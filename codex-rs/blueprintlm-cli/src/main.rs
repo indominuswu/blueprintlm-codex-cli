@@ -67,6 +67,9 @@ enum Subcommand {
 
     /// Fetch current rate limit snapshot and print JSON.
     GetRateLimits,
+
+    /// List available models as JSON.
+    Models,
 }
 
 #[derive(Debug, Parser)]
@@ -275,6 +278,9 @@ async fn cli_main(_codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<(
         }
         Subcommand::GetRateLimits => {
             run_get_rate_limits(root_config_overrides).await?;
+        }
+        Subcommand::Models => {
+            run_list_models(root_config_overrides).await?;
         }
     }
 
@@ -487,6 +493,24 @@ async fn run_get_rate_limits(root_config_overrides: CliConfigOverrides) -> anyho
     Ok(())
 }
 
+async fn run_list_models(root_config_overrides: CliConfigOverrides) -> anyhow::Result<()> {
+    let cli_overrides = root_config_overrides
+        .parse_overrides()
+        .map_err(anyhow::Error::msg)?;
+    let config = Config::load_with_cli_overrides(cli_overrides, ConfigOverrides::default()).await?;
+
+    let auth_manager = AuthManager::shared(
+        config.codex_home.clone(),
+        true,
+        config.cli_auth_credentials_store_mode,
+    );
+    let models_manager = ModelsManager::new(auth_manager);
+    let presets = models_manager.available_models.read().await.clone();
+    let json = serde_json::to_string_pretty(&presets)?;
+    println!("{json}");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -523,5 +547,11 @@ mod tests {
         assert_eq!(cwd.as_deref(), Some(std::path::Path::new("/tmp")));
         assert!(!debug_save_prompts);
         assert!(debug_stream_error.is_none());
+    }
+
+    #[test]
+    fn models_subcommand_parses() {
+        let cli = MultitoolCli::try_parse_from(["blueprintlm-cli", "models"]).expect("parse");
+        assert!(matches!(cli.subcommand, Subcommand::Models));
     }
 }
