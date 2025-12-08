@@ -145,6 +145,10 @@ struct StartSessionCommand {
     /// Tell the agent to use the specified directory as its working root.
     #[clap(long = "cd", short = 'C', value_name = "DIR")]
     cwd: Option<PathBuf>,
+
+    /// Simulate a start-session failure for testing error handling.
+    #[arg(long = "debug-start-session-error", value_name = "KIND", hide = true)]
+    debug_start_session_error: Option<String>,
 }
 
 #[derive(Debug, Parser)]
@@ -266,8 +270,18 @@ async fn cli_main(_codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<(
             let json = serde_json::to_string_pretty(&conversations)?;
             println!("{json}");
         }
-        Subcommand::StartSession(StartSessionCommand { add_dir, cwd }) => {
-            run_start_session(add_dir, cwd, root_config_overrides).await?;
+        Subcommand::StartSession(StartSessionCommand {
+            add_dir,
+            cwd,
+            debug_start_session_error,
+        }) => {
+            run_start_session(
+                add_dir,
+                cwd,
+                debug_start_session_error,
+                root_config_overrides,
+            )
+            .await?;
         }
         Subcommand::Login(mut login_cli) => {
             prepend_config_flags(
@@ -627,8 +641,22 @@ async fn run_ask(
 async fn run_start_session(
     add_dir: Vec<PathBuf>,
     cwd: Option<PathBuf>,
+    debug_start_session_error: Option<String>,
     root_config_overrides: CliConfigOverrides,
 ) -> anyhow::Result<()> {
+    if let Some(kind) = debug_start_session_error {
+        if kind == "io" {
+            let response = StartSessionResponse {
+                success: false,
+                session: None,
+                error: Some("simulated io error".to_string()),
+            };
+            let json = serde_json::to_string_pretty(&response)?;
+            println!("{json}");
+            return Ok(());
+        }
+    }
+
     let cli_overrides = root_config_overrides
         .parse_overrides()
         .map_err(anyhow::Error::msg)?;
@@ -757,12 +785,20 @@ mod tests {
             "/tmp",
             "--add-dir",
             "/tmp/foo",
+            "--debug-start-session-error",
+            "io",
         ])
         .expect("parse");
-        let Subcommand::StartSession(StartSessionCommand { add_dir, cwd }) = cli.subcommand else {
+        let Subcommand::StartSession(StartSessionCommand {
+            add_dir,
+            cwd,
+            debug_start_session_error,
+        }) = cli.subcommand
+        else {
             unreachable!()
         };
         assert_eq!(add_dir, vec![std::path::PathBuf::from("/tmp/foo")]);
         assert_eq!(cwd.as_deref(), Some(std::path::Path::new("/tmp")));
+        assert_eq!(debug_start_session_error.as_deref(), Some("io"));
     }
 }
