@@ -56,6 +56,8 @@ use crate::openai_models::model_family::ModelFamily;
 use crate::tools::spec::create_tools_json_for_chat_completions_api;
 use crate::tools::spec::create_tools_json_for_responses_api;
 
+const DEBUG_STREAM_ERROR_ENV: &str = "BLUEPRINTLM_DEBUG_STREAM_ERROR";
+
 #[derive(Debug, Clone)]
 pub struct ModelClient {
     config: Arc<Config>,
@@ -125,9 +127,7 @@ impl ModelClient {
     /// For Chat providers, the underlying stream is optionally aggregated
     /// based on the `show_raw_agent_reasoning` flag in the config.
     pub async fn stream(&self, prompt: &Prompt) -> Result<ResponseStream> {
-        if let Ok(kind) = env::var("CODEX_DEBUG_STREAM_ERROR")
-            && !kind.is_empty()
-        {
+        if let Some(kind) = Self::debug_stream_error_kind() {
             return Ok(Self::make_debug_error_stream(kind));
         }
 
@@ -151,6 +151,12 @@ impl ModelClient {
         }
     }
 
+    fn debug_stream_error_kind() -> Option<String> {
+        env::var(DEBUG_STREAM_ERROR_ENV)
+            .ok()
+            .filter(|kind| !kind.is_empty())
+    }
+
     fn make_debug_error_stream(kind: String) -> ResponseStream {
         let (tx, rx_event) = mpsc::channel(1);
         let err = match kind.as_str() {
@@ -171,7 +177,7 @@ impl ModelClient {
                 request_id: Some("debug-request-id".to_string()),
             }),
             "fatal" => CodexErr::Fatal("debug fatal error".to_string()),
-            _ => CodexErr::Fatal(format!("unknown CODEX_DEBUG_STREAM_ERROR '{kind}'")),
+            _ => CodexErr::Fatal(format!("unknown {DEBUG_STREAM_ERROR_ENV} '{kind}'")),
         };
         let _ = tx.try_send(Err(err));
         ResponseStream { rx_event }

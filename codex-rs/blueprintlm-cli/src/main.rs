@@ -14,8 +14,12 @@ use codex_core::CodexAuth;
 use codex_core::ModelClient;
 use codex_core::Prompt;
 use codex_core::ResponseEvent;
+use codex_core::ToolsConfig;
+use codex_core::ToolsConfigParams;
+use codex_core::blueprintlm_default_tool_specs;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
+use codex_core::features::Feature;
 use codex_core::openai_models::models_manager::ModelsManager;
 use codex_core::rollout::list::Cursor as SessionsCursor;
 use codex_core::rollout::list::get_conversations;
@@ -387,6 +391,16 @@ async fn run_ask(
     let mut prompt = Prompt::default();
     prompt.input = vec![response_item];
 
+    let tools_config = ToolsConfig::new(&ToolsConfigParams {
+        model_family: &model_family,
+        features: &config.features,
+    });
+    prompt.set_tools(blueprintlm_default_tool_specs(&tools_config));
+    prompt.set_parallel_tool_calls(
+        model_family.supports_parallel_tool_calls
+            && config.features.enabled(Feature::ParallelToolCalls),
+    );
+
     if debug_save_prompts {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -425,13 +439,13 @@ async fn run_ask(
     }
 
     let previous_debug_stream_error = if debug_stream_error.is_some() {
-        env::var("CODEX_DEBUG_STREAM_ERROR").ok()
+        env::var("BLUEPRINTLM_DEBUG_STREAM_ERROR").ok()
     } else {
         None
     };
     if let Some(kind) = debug_stream_error.clone() {
         unsafe {
-            env::set_var("CODEX_DEBUG_STREAM_ERROR", kind);
+            env::set_var("BLUEPRINTLM_DEBUG_STREAM_ERROR", kind);
         }
     }
 
@@ -441,11 +455,11 @@ async fn run_ask(
             if debug_stream_error.is_some() {
                 if let Some(prev) = previous_debug_stream_error {
                     unsafe {
-                        env::set_var("CODEX_DEBUG_STREAM_ERROR", prev);
+                        env::set_var("BLUEPRINTLM_DEBUG_STREAM_ERROR", prev);
                     }
                 } else {
                     unsafe {
-                        env::remove_var("CODEX_DEBUG_STREAM_ERROR");
+                        env::remove_var("BLUEPRINTLM_DEBUG_STREAM_ERROR");
                     }
                 }
             }
@@ -462,11 +476,11 @@ async fn run_ask(
     if debug_stream_error.is_some() {
         if let Some(prev) = previous_debug_stream_error {
             unsafe {
-                env::set_var("CODEX_DEBUG_STREAM_ERROR", prev);
+                env::set_var("BLUEPRINTLM_DEBUG_STREAM_ERROR", prev);
             }
         } else {
             unsafe {
-                env::remove_var("CODEX_DEBUG_STREAM_ERROR");
+                env::remove_var("BLUEPRINTLM_DEBUG_STREAM_ERROR");
             }
         }
     }

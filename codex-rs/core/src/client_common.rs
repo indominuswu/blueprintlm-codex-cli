@@ -44,6 +44,14 @@ pub struct Prompt {
 }
 
 impl Prompt {
+    pub fn set_tools(&mut self, tools: Vec<ToolSpec>) {
+        self.tools = tools;
+    }
+
+    pub fn set_parallel_tool_calls(&mut self, enabled: bool) {
+        self.parallel_tool_calls = enabled;
+    }
+
     pub fn get_full_instructions<'a>(&'a self, model: &'a ModelFamily) -> Cow<'a, str> {
         let base = self
             .base_instructions_override

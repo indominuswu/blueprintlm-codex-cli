@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
-pub(crate) struct ToolsConfig {
+pub struct ToolsConfig {
     pub shell_type: ConfigShellToolType,
     pub apply_patch_tool_type: Option<ApplyPatchToolType>,
     pub web_search_request: bool,
@@ -25,9 +25,9 @@ pub(crate) struct ToolsConfig {
     pub experimental_supported_tools: Vec<String>,
 }
 
-pub(crate) struct ToolsConfigParams<'a> {
-    pub(crate) model_family: &'a ModelFamily,
-    pub(crate) features: &'a Features,
+pub struct ToolsConfigParams<'a> {
+    pub model_family: &'a ModelFamily,
+    pub features: &'a Features,
 }
 
 impl ToolsConfig {
@@ -1128,6 +1128,38 @@ pub(crate) fn build_specs(
         }
     }
 
+    builder
+}
+
+pub fn default_tool_specs(config: &ToolsConfig) -> Vec<ToolSpec> {
+    build_specs(config, None)
+        .build()
+        .0
+        .into_iter()
+        .map(|configured| configured.spec)
+        .collect()
+}
+
+pub fn blueprintlm_default_tool_specs(config: &ToolsConfig) -> Vec<ToolSpec> {
+    blueprintlm_build_specs(config, None)
+        .build()
+        .0
+        .into_iter()
+        .map(|configured| configured.spec)
+        .collect()
+}
+
+pub fn blueprintlm_build_specs(
+    _config: &ToolsConfig,
+    _mcp_tools: Option<HashMap<String, mcp_types::Tool>>,
+) -> ToolRegistryBuilder {
+    use crate::tools::handlers::Ue5ProjectDirHandler;
+    use std::sync::Arc;
+
+    let mut builder = ToolRegistryBuilder::new();
+    let ue5_project_dir_handler = Arc::new(Ue5ProjectDirHandler);
+    builder.push_spec_with_parallel_support(create_ue5_project_dir_tool(), true);
+    builder.register_handler("ue5_project_dir", ue5_project_dir_handler);
     builder
 }
 
