@@ -11,6 +11,7 @@ use codex_cli::login::run_logout;
 use codex_common::CliConfigOverrides;
 use codex_core::AuthManager;
 use codex_core::CodexAuth;
+use codex_core::ConversationManager;
 use codex_core::ModelClient;
 use codex_core::Prompt;
 use codex_core::ResponseEvent;
@@ -29,6 +30,7 @@ use codex_protocol::ConversationId;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::SessionConfiguredEvent;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::user_input::UserInput;
 use futures_util::StreamExt;
@@ -65,6 +67,10 @@ enum Subcommand {
 
     /// List recorded sessions as JSON.
     Sessions(SessionsCommand),
+
+    /// Start a session and print session metadata as JSON.
+    #[clap(name = "start-session")]
+    StartSession(StartSessionCommand),
 
     /// Manage login.
     Login(LoginCommand),
@@ -124,6 +130,17 @@ struct SessionsCommand {
     /// Filter by model provider (comma-separated). Defaults to all.
     #[arg(long = "provider", value_delimiter = ',', value_name = "PROVIDER")]
     providers: Vec<String>,
+}
+
+#[derive(Debug, Parser)]
+struct StartSessionCommand {
+    /// Additional directories that should be writable alongside the primary workspace.
+    #[arg(long = "add-dir", value_name = "DIR", value_hint = clap::ValueHint::DirPath)]
+    add_dir: Vec<PathBuf>,
+
+    /// Tell the agent to use the specified directory as its working root.
+    #[clap(long = "cd", short = 'C', value_name = "DIR")]
+    cwd: Option<PathBuf>,
 }
 
 #[derive(Debug, Parser)]
@@ -245,6 +262,9 @@ async fn cli_main(_codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<(
             let json = serde_json::to_string_pretty(&conversations)?;
             println!("{json}");
         }
+        Subcommand::StartSession(StartSessionCommand { add_dir, cwd }) => {
+            run_start_session(add_dir, cwd, root_config_overrides).await?;
+        }
         Subcommand::Login(mut login_cli) => {
             prepend_config_flags(
                 &mut login_cli.config_overrides,
@@ -309,6 +329,13 @@ fn prepend_config_flags(
 struct AskResponse {
     success: bool,
     output: Option<String>,
+    error: Option<String>,
+}
+
+#[derive(Serialize)]
+struct StartSessionResponse {
+    success: bool,
+    session: Option<SessionConfiguredEvent>,
     error: Option<String>,
 }
 
@@ -526,6 +553,46 @@ async fn run_ask(
     Ok(())
 }
 
+async fn run_start_session(
+    add_dir: Vec<PathBuf>,
+    cwd: Option<PathBuf>,
+    root_config_overrides: CliConfigOverrides,
+) -> anyhow::Result<()> {
+    let cli_overrides = root_config_overrides
+        .parse_overrides()
+        .map_err(anyhow::Error::msg)?;
+    let config_overrides = ConfigOverrides {
+        cwd: cwd.clone(),
+        additional_writable_roots: add_dir.clone(),
+        ..Default::default()
+    };
+    let config = Config::load_with_cli_overrides(cli_overrides, config_overrides).await?;
+
+    let auth_manager = AuthManager::shared(
+        config.codex_home.clone(),
+        true,
+        config.cli_auth_credentials_store_mode,
+    );
+    let conversation_manager = ConversationManager::new(auth_manager, SessionSource::Cli);
+    let response = match conversation_manager.new_conversation(config).await {
+        Ok(new_conversation) => StartSessionResponse {
+            success: true,
+            session: Some(new_conversation.session_configured),
+            error: None,
+        },
+        Err(err) => StartSessionResponse {
+            success: false,
+            session: None,
+            error: Some(err.to_string()),
+        },
+    };
+
+    let json = serde_json::to_string_pretty(&response)?;
+    println!("{json}");
+
+    Ok(())
+}
+
 async fn run_get_rate_limits(root_config_overrides: CliConfigOverrides) -> anyhow::Result<()> {
     let cli_overrides = root_config_overrides
         .parse_overrides()
@@ -608,5 +675,23 @@ mod tests {
     fn models_subcommand_parses() {
         let cli = MultitoolCli::try_parse_from(["blueprintlm-cli", "models"]).expect("parse");
         assert!(matches!(cli.subcommand, Subcommand::Models));
+    }
+
+    #[test]
+    fn start_session_subcommand_parses() {
+        let cli = MultitoolCli::try_parse_from([
+            "blueprintlm-cli",
+            "start-session",
+            "-C",
+            "/tmp",
+            "--add-dir",
+            "/tmp/foo",
+        ])
+        .expect("parse");
+        let Subcommand::StartSession(StartSessionCommand { add_dir, cwd }) = cli.subcommand else {
+            unreachable!()
+        };
+        assert_eq!(add_dir, vec![std::path::PathBuf::from("/tmp/foo")]);
+        assert_eq!(cwd.as_deref(), Some(std::path::Path::new("/tmp")));
     }
 }
