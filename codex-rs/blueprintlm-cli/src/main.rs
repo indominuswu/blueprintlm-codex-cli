@@ -15,6 +15,7 @@ use codex_core::ConversationManager;
 use codex_core::ModelClient;
 use codex_core::Prompt;
 use codex_core::ResponseEvent;
+use codex_core::RolloutRecorder;
 use codex_core::ToolsConfig;
 use codex_core::ToolsConfigParams;
 use codex_core::blueprintlm_default_tool_specs;
@@ -22,6 +23,7 @@ use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
 use codex_core::features::Feature;
 use codex_core::openai_models::models_manager::ModelsManager;
+use codex_core::rollout::find_conversation_path_by_id_str;
 use codex_core::rollout::list::Cursor as SessionsCursor;
 use codex_core::rollout::list::get_conversations;
 use codex_core::terminal;
@@ -30,6 +32,8 @@ use codex_protocol::ConversationId;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::InitialHistory;
+use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionConfiguredEvent;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::user_input::UserInput;
@@ -93,7 +97,7 @@ struct AskCommand {
 
     /// Resume an existing session by id instead of starting a new one.
     #[arg(long = "session-id", value_name = "SESSION_ID")]
-    session_id: Option<String>,
+    session_id: String,
 
     /// Save per-turn prompt payloads for debugging into the Codex home debug directory.
     #[arg(long = "debug-save-prompts", default_value_t = false, hide = true)]
@@ -339,9 +343,43 @@ struct StartSessionResponse {
     error: Option<String>,
 }
 
+fn emit_error(error: String) -> anyhow::Result<()> {
+    let response = AskResponse {
+        success: false,
+        output: None,
+        error: Some(error),
+    };
+    let json = serde_json::to_string_pretty(&response)?;
+    println!("{json}");
+    Ok(())
+}
+
+fn response_items_from_history(
+    history: &InitialHistory,
+) -> anyhow::Result<(ConversationId, Vec<ResponseItem>)> {
+    match history {
+        InitialHistory::Resumed(resumed) => {
+            let mut items = Vec::new();
+            for item in &resumed.history {
+                match item {
+                    RolloutItem::ResponseItem(ri) => items.push(ri.clone()),
+                    RolloutItem::Compacted(compacted) => {
+                        items.push(ResponseItem::from(compacted.clone()))
+                    }
+                    _ => {}
+                }
+            }
+            Ok((resumed.conversation_id, items))
+        }
+        _ => Err(anyhow::anyhow!(
+            "Session history not found for provided session id"
+        )),
+    }
+}
+
 async fn run_ask(
     prompt: String,
-    session_id: Option<String>,
+    session_id: String,
     debug_save_prompts: bool,
     add_dir: Vec<PathBuf>,
     cwd: Option<PathBuf>,
@@ -374,10 +412,6 @@ async fn run_ask(
         }
     }
 
-    if session_id.is_some() {
-        eprintln!("--session-id is not supported in simplified ask mode; starting a new session.");
-    }
-
     let auth_manager = AuthManager::shared(
         config.codex_home.clone(),
         true,
@@ -386,7 +420,43 @@ async fn run_ask(
     let models_manager = ModelsManager::new(auth_manager.clone());
     let model_family = models_manager.construct_model_family(&config.model, &config);
     let model_family_for_client = model_family.clone();
-    let conversation_id = ConversationId::new();
+    let conversation_id = match ConversationId::from_string(&session_id) {
+        Ok(id) => id,
+        Err(err) => {
+            emit_error(err.to_string())?;
+            return Ok(());
+        }
+    };
+    let rollout_path = match find_conversation_path_by_id_str(&config.codex_home, &session_id).await
+    {
+        Ok(Some(path)) => path,
+        Ok(None) => {
+            emit_error(format!("Session with id {session_id} not found"))?;
+            return Ok(());
+        }
+        Err(err) => {
+            emit_error(format!("Failed to locate session: {err}"))?;
+            return Ok(());
+        }
+    };
+    let initial_history = match RolloutRecorder::get_rollout_history(&rollout_path).await {
+        Ok(history) => history,
+        Err(err) => {
+            emit_error(format!("Failed to load session history: {err}"))?;
+            return Ok(());
+        }
+    };
+    let (resumed_id, mut history_items) = match response_items_from_history(&initial_history) {
+        Ok((id, items)) => (id, items),
+        Err(err) => {
+            emit_error(err.to_string())?;
+            return Ok(());
+        }
+    };
+    if resumed_id != conversation_id {
+        emit_error("Session id mismatch between provided id and rollout history".to_string())?;
+        return Ok(());
+    }
     let auth = auth_manager.auth();
     let otel_event_manager = OtelEventManager::new(
         conversation_id,
@@ -416,7 +486,8 @@ async fn run_ask(
     }]);
     let response_item: ResponseItem = response_input.into();
     let mut prompt = Prompt::default();
-    prompt.input = vec![response_item];
+    prompt.input.append(&mut history_items);
+    prompt.input.push(response_item);
 
     let tools_config = ToolsConfig::new(&ToolsConfigParams {
         model_family: &model_family,
@@ -664,7 +735,7 @@ mod tests {
             unreachable!()
         };
         assert_eq!(prompt, "hello");
-        assert_eq!(session_id.as_deref(), Some("abc"));
+        assert_eq!(session_id.as_str(), "abc");
         assert_eq!(add_dir, vec![std::path::PathBuf::from("/tmp/foo")]);
         assert_eq!(cwd.as_deref(), Some(std::path::Path::new("/tmp")));
         assert!(!debug_save_prompts);
