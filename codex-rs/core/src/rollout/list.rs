@@ -206,20 +206,23 @@ async fn traverse_directories_for_paths(
                     let summary = read_head_summary(&path, HEAD_RECORD_LIMIT)
                         .await
                         .unwrap_or_default();
-                    if !allowed_sources.is_empty()
-                        && !summary
+                    if !allowed_sources.is_empty() {
+                        let source_ok = summary
                             .source
-                            .is_some_and(|source| allowed_sources.iter().any(|s| s == &source))
-                    {
-                        continue;
+                            .as_ref()
+                            .is_some_and(|source| allowed_sources.iter().any(|s| s == source));
+                        if !source_ok {
+                            continue;
+                        }
                     }
-                    if let Some(matcher) = provider_matcher
-                        && !matcher.matches(summary.model_provider.as_deref())
-                    {
-                        continue;
+                    if let Some(matcher) = provider_matcher {
+                        let provider_ok = matcher.matches(summary.model_provider.as_deref());
+                        if !provider_ok {
+                            continue;
+                        }
                     }
-                    // Apply filters: must have session meta and at least one user message event
-                    if summary.saw_session_meta && summary.saw_user_event {
+                    // Apply filters: must have session meta
+                    if summary.saw_session_meta {
                         let HeadTailSummary {
                             head,
                             created_at,

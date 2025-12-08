@@ -7,10 +7,10 @@ use crate::tools::registry::ToolKind;
 use async_trait::async_trait;
 
 /// Declares a UE5-side project directory resolver. The UE plugin performs the actual lookup.
-pub struct Ue5ProjectDirHandler;
+pub struct GetProjectDirectoryHandler;
 
 #[async_trait]
-impl ToolHandler for Ue5ProjectDirHandler {
+impl ToolHandler for GetProjectDirectoryHandler {
     fn kind(&self) -> ToolKind {
         ToolKind::Function
     }
@@ -24,7 +24,7 @@ impl ToolHandler for Ue5ProjectDirHandler {
             });
         }
         Err(FunctionCallError::Fatal(
-            "ue5_project_dir requires function payload".to_string(),
+            "get_project_directory requires function payload".to_string(),
         ))
     }
 }

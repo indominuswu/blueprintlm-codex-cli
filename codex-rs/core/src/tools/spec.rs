@@ -464,7 +464,7 @@ fn create_test_sync_tool() -> ToolSpec {
     })
 }
 
-fn create_ue5_project_dir_tool() -> ToolSpec {
+fn create_get_project_directory_tool() -> ToolSpec {
     let mut properties = BTreeMap::new();
     properties.insert(
         "project_dir".to_string(),
@@ -477,7 +477,7 @@ fn create_ue5_project_dir_tool() -> ToolSpec {
     );
 
     ToolSpec::Function(ResponsesApiTool {
-        name: "ue5_project_dir".to_string(),
+        name: "get_project_directory".to_string(),
         description: "Declares the UE5 project directory resolver. Codex only surfaces the tool; the UE plugin executes it."
             .to_string(),
         strict: false,
@@ -986,6 +986,7 @@ pub(crate) fn build_specs(
     mcp_tools: Option<HashMap<String, mcp_types::Tool>>,
 ) -> ToolRegistryBuilder {
     use crate::tools::handlers::ApplyPatchHandler;
+    use crate::tools::handlers::GetProjectDirectoryHandler;
     use crate::tools::handlers::GrepFilesHandler;
     use crate::tools::handlers::ListDirHandler;
     use crate::tools::handlers::McpHandler;
@@ -995,7 +996,6 @@ pub(crate) fn build_specs(
     use crate::tools::handlers::ShellCommandHandler;
     use crate::tools::handlers::ShellHandler;
     use crate::tools::handlers::TestSyncHandler;
-    use crate::tools::handlers::Ue5ProjectDirHandler;
     use crate::tools::handlers::UnifiedExecHandler;
     use crate::tools::handlers::ViewImageHandler;
     use std::sync::Arc;
@@ -1010,7 +1010,7 @@ pub(crate) fn build_specs(
     let mcp_handler = Arc::new(McpHandler);
     let mcp_resource_handler = Arc::new(McpResourceHandler);
     let shell_command_handler = Arc::new(ShellCommandHandler);
-    let ue5_project_dir_handler = Arc::new(Ue5ProjectDirHandler);
+    let get_project_directory_handler = Arc::new(GetProjectDirectoryHandler);
 
     match &config.shell_type {
         ConfigShellToolType::Default => {
@@ -1050,8 +1050,8 @@ pub(crate) fn build_specs(
 
     builder.push_spec(PLAN_TOOL.clone());
     builder.register_handler("update_plan", plan_handler);
-    builder.push_spec_with_parallel_support(create_ue5_project_dir_tool(), true);
-    builder.register_handler("ue5_project_dir", ue5_project_dir_handler);
+    builder.push_spec_with_parallel_support(create_get_project_directory_tool(), true);
+    builder.register_handler("get_project_directory", get_project_directory_handler);
 
     if let Some(apply_patch_tool_type) = &config.apply_patch_tool_type {
         match apply_patch_tool_type {
@@ -1153,13 +1153,13 @@ pub fn blueprintlm_build_specs(
     _config: &ToolsConfig,
     _mcp_tools: Option<HashMap<String, mcp_types::Tool>>,
 ) -> ToolRegistryBuilder {
-    use crate::tools::handlers::Ue5ProjectDirHandler;
+    use crate::tools::handlers::GetProjectDirectoryHandler;
     use std::sync::Arc;
 
     let mut builder = ToolRegistryBuilder::new();
-    let ue5_project_dir_handler = Arc::new(Ue5ProjectDirHandler);
-    builder.push_spec_with_parallel_support(create_ue5_project_dir_tool(), true);
-    builder.register_handler("ue5_project_dir", ue5_project_dir_handler);
+    let get_project_directory_handler = Arc::new(GetProjectDirectoryHandler);
+    builder.push_spec_with_parallel_support(create_get_project_directory_tool(), true);
+    builder.register_handler("get_project_directory", get_project_directory_handler);
     builder
 }
 
@@ -1297,7 +1297,7 @@ mod tests {
             create_list_mcp_resource_templates_tool(),
             create_read_mcp_resource_tool(),
             PLAN_TOOL.clone(),
-            create_ue5_project_dir_tool(),
+            create_get_project_directory_tool(),
             create_apply_patch_freeform_tool(),
             ToolSpec::WebSearch {},
             create_view_image_tool(),
@@ -1305,7 +1305,7 @@ mod tests {
             expected.insert(tool_name(&spec).to_string(), spec);
         }
 
-        // Exact name set match — this is the only test allowed to fail when tools change.
+        // Exact name set match  Ethis is the only test allowed to fail when tools change.
         let actual_names: HashSet<_> = actual.keys().cloned().collect();
         let expected_names: HashSet<_> = expected.keys().cloned().collect();
         assert_eq!(actual_names, expected_names, "tool name set mismatch");
@@ -1342,7 +1342,7 @@ mod tests {
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
                 "update_plan",
-                "ue5_project_dir",
+                "get_project_directory",
                 "apply_patch",
                 "view_image",
             ],
@@ -1360,7 +1360,7 @@ mod tests {
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
                 "update_plan",
-                "ue5_project_dir",
+                "get_project_directory",
                 "apply_patch",
                 "view_image",
             ],
@@ -1381,7 +1381,7 @@ mod tests {
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
                 "update_plan",
-                "ue5_project_dir",
+                "get_project_directory",
                 "apply_patch",
                 "web_search",
                 "view_image",
@@ -1403,7 +1403,7 @@ mod tests {
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
                 "update_plan",
-                "ue5_project_dir",
+                "get_project_directory",
                 "apply_patch",
                 "web_search",
                 "view_image",
@@ -1422,7 +1422,7 @@ mod tests {
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
                 "update_plan",
-                "ue5_project_dir",
+                "get_project_directory",
                 "view_image",
             ],
         );
@@ -1439,7 +1439,7 @@ mod tests {
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
                 "update_plan",
-                "ue5_project_dir",
+                "get_project_directory",
                 "apply_patch",
                 "view_image",
             ],
@@ -1457,7 +1457,7 @@ mod tests {
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
                 "update_plan",
-                "ue5_project_dir",
+                "get_project_directory",
                 "view_image",
             ],
         );
@@ -1474,7 +1474,7 @@ mod tests {
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
                 "update_plan",
-                "ue5_project_dir",
+                "get_project_directory",
                 "apply_patch",
                 "view_image",
             ],
@@ -1493,7 +1493,7 @@ mod tests {
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
                 "update_plan",
-                "ue5_project_dir",
+                "get_project_directory",
                 "apply_patch",
                 "view_image",
             ],
@@ -1514,7 +1514,7 @@ mod tests {
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
                 "update_plan",
-                "ue5_project_dir",
+                "get_project_directory",
                 "web_search",
                 "view_image",
             ],

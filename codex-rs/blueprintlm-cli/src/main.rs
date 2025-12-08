@@ -29,11 +29,11 @@ use codex_core::rollout::list::get_conversations;
 use codex_core::terminal;
 use codex_otel::otel_event_manager::OtelEventManager;
 use codex_protocol::ConversationId;
-use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::RolloutItem;
+use codex_protocol::protocol::RolloutLine;
 use codex_protocol::protocol::SessionConfiguredEvent;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::user_input::UserInput;
@@ -46,6 +46,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
+use time::OffsetDateTime;
+use time::macros::format_description;
 
 /// Codex CLI
 #[derive(Debug, Parser)]
@@ -346,8 +348,8 @@ fn prepend_config_flags(
 #[derive(Serialize)]
 struct AskResponse {
     success: bool,
-    output: Option<String>,
     error: Option<String>,
+    response: Vec<RolloutLine>,
 }
 
 #[derive(Serialize)]
@@ -360,8 +362,8 @@ struct StartSessionResponse {
 fn emit_error(error: String) -> anyhow::Result<()> {
     let response = AskResponse {
         success: false,
-        output: None,
         error: Some(error),
+        response: Vec::new(),
     };
     let json = serde_json::to_string_pretty(&response)?;
     println!("{json}");
@@ -577,8 +579,8 @@ async fn run_ask(
             }
             let response = AskResponse {
                 success: false,
-                output: None,
                 error: Some(err.to_string()),
+                response: Vec::new(),
             };
             let json = serde_json::to_string_pretty(&response)?;
             println!("{json}");
@@ -596,22 +598,22 @@ async fn run_ask(
             }
         }
     }
-    let mut final_message = String::new();
     let mut stream_error = None;
+    let mut collected_items: Vec<RolloutLine> = Vec::new();
     while let Some(event) = stream.next().await {
         match event {
             Ok(ev) => match ev {
-                ResponseEvent::OutputTextDelta(delta) => final_message.push_str(&delta),
+                ResponseEvent::OutputTextDelta(_) => {}
                 ResponseEvent::OutputItemDone(item) | ResponseEvent::OutputItemAdded(item) => {
-                    if let ResponseItem::Message { role, content, .. } = item
-                        && role == "assistant"
-                    {
-                        for ci in content {
-                            if let ContentItem::OutputText { text } = ci {
-                                final_message.push_str(&text);
-                            }
-                        }
-                    }
+                    let timestamp = OffsetDateTime::now_utc()
+                        .format(&format_description!(
+                            "[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]Z"
+                        ))
+                        .unwrap_or_else(|_| "unknown".to_string());
+                    collected_items.push(RolloutLine {
+                        timestamp,
+                        item: RolloutItem::ResponseItem(item),
+                    });
                 }
                 ResponseEvent::Completed { .. } => break,
                 _ => {}
@@ -625,12 +627,8 @@ async fn run_ask(
 
     let response = AskResponse {
         success: stream_error.is_none(),
-        output: if final_message.is_empty() {
-            None
-        } else {
-            Some(final_message)
-        },
         error: stream_error,
+        response: collected_items,
     };
     let json = serde_json::to_string_pretty(&response)?;
     println!("{json}");
@@ -644,17 +642,17 @@ async fn run_start_session(
     debug_start_session_error: Option<String>,
     root_config_overrides: CliConfigOverrides,
 ) -> anyhow::Result<()> {
-    if let Some(kind) = debug_start_session_error {
-        if kind == "io" {
-            let response = StartSessionResponse {
-                success: false,
-                session: None,
-                error: Some("simulated io error".to_string()),
-            };
-            let json = serde_json::to_string_pretty(&response)?;
-            println!("{json}");
-            return Ok(());
-        }
+    if let Some(kind) = debug_start_session_error
+        && kind == "io"
+    {
+        let response = StartSessionResponse {
+            success: false,
+            session: None,
+            error: Some("simulated io error".to_string()),
+        };
+        let json = serde_json::to_string_pretty(&response)?;
+        println!("{json}");
+        return Ok(());
     }
 
     let cli_overrides = root_config_overrides

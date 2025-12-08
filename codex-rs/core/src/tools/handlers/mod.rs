@@ -23,6 +23,6 @@ pub use read_file::ReadFileHandler;
 pub use shell::ShellCommandHandler;
 pub use shell::ShellHandler;
 pub use test_sync::TestSyncHandler;
-pub use ue5::Ue5ProjectDirHandler;
+pub use ue5::GetProjectDirectoryHandler;
 pub use unified_exec::UnifiedExecHandler;
 pub use view_image::ViewImageHandler;
