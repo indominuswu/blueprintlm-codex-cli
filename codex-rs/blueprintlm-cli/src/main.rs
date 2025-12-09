@@ -26,6 +26,7 @@ use codex_core::openai_models::models_manager::ModelsManager;
 use codex_core::rollout::find_conversation_path_by_id_str;
 use codex_core::rollout::list::Cursor as SessionsCursor;
 use codex_core::rollout::list::get_conversations;
+use codex_core::rollout::recorder::RolloutRecorderParams;
 use codex_core::terminal;
 use codex_otel::otel_event_manager::OtelEventManager;
 use codex_protocol::ConversationId;
@@ -93,8 +94,12 @@ enum Subcommand {
 #[derive(Debug, Parser)]
 struct AskCommand {
     /// JSON payload representing one or more ResponseInputItem entries.
-    #[arg(value_name = "PAYLOAD_JSON")]
-    payload: String,
+    #[arg(long = "payload", value_name = "PAYLOAD_JSON")]
+    payload: Option<String>,
+
+    /// JSON payload representing one or more ResponseInputItem entries (positional).
+    #[arg(value_name = "PAYLOAD_JSON", required_unless_present = "payload")]
+    payload_arg: Option<String>,
 
     /// Resume an existing session by id instead of starting a new one.
     #[arg(long = "session-id", value_name = "SESSION_ID")]
@@ -227,12 +232,16 @@ async fn cli_main(_codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<(
     match subcommand {
         Subcommand::Ask(AskCommand {
             payload,
+            payload_arg,
             session_id,
             debug_save_prompts,
             add_dir,
             cwd,
             debug_stream_error,
         }) => {
+            let payload = payload.or(payload_arg).ok_or_else(|| {
+                anyhow::anyhow!("payload is required either via --payload or positional argument")
+            })?;
             run_ask(
                 payload,
                 session_id,
@@ -482,6 +491,16 @@ async fn run_ask(
         emit_error("Session id mismatch between provided id and rollout history".to_string())?;
         return Ok(());
     }
+    let rollout_recorder =
+        match RolloutRecorder::new(&config, RolloutRecorderParams::resume(rollout_path.clone()))
+            .await
+        {
+            Ok(rec) => Some(rec),
+            Err(err) => {
+                eprintln!("Failed to open rollout recorder: {err}");
+                None
+            }
+        };
     let auth = auth_manager.auth();
     let otel_event_manager = OtelEventManager::new(
         conversation_id,
@@ -520,10 +539,23 @@ async fn run_ask(
             }
         },
     };
+    let mut new_items: Vec<ResponseItem> = Vec::new();
     let mut prompt = Prompt::default();
     prompt.input.append(&mut history_items);
     for item in response_inputs {
-        prompt.input.push(ResponseItem::from(item));
+        let response_item = ResponseItem::from(item);
+        prompt.input.push(response_item.clone());
+        new_items.push(response_item);
+    }
+    if let Some(recorder) = rollout_recorder.as_ref() {
+        let to_record: Vec<RolloutItem> = new_items
+            .iter()
+            .cloned()
+            .map(RolloutItem::ResponseItem)
+            .collect();
+        if let Err(err) = recorder.append_items(&to_record).await {
+            eprintln!("Failed to record request items: {err}");
+        }
     }
 
     let tools_config = ToolsConfig::new(&ToolsConfigParams {
@@ -625,7 +657,8 @@ async fn run_ask(
         match event {
             Ok(ev) => match ev {
                 ResponseEvent::OutputTextDelta(_) => {}
-                ResponseEvent::OutputItemDone(item) | ResponseEvent::OutputItemAdded(item) => {
+                ResponseEvent::OutputItemAdded(_) => {}
+                ResponseEvent::OutputItemDone(item) => {
                     let timestamp = OffsetDateTime::now_utc()
                         .format(&format_description!(
                             "[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]Z"
@@ -651,6 +684,17 @@ async fn run_ask(
         error: stream_error,
         response: collected_items,
     };
+    if let Some(recorder) = rollout_recorder.as_ref() {
+        let to_record: Vec<RolloutItem> = response
+            .response
+            .iter()
+            .cloned()
+            .map(|line| line.item)
+            .collect();
+        if let Err(err) = recorder.append_items(&to_record).await {
+            eprintln!("Failed to record response items: {err}");
+        }
+    }
     let json = serde_json::to_string_pretty(&response)?;
     println!("{json}");
 
@@ -779,17 +823,56 @@ mod tests {
         let cli = MultitoolCli::try_parse_from([
             "blueprintlm-cli",
             "ask",
-            r#"{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}"#,
             "--session-id",
             "abc",
             "-C",
             "/tmp",
             "--add-dir",
             "/tmp/foo",
+            r#"{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}"#,
         ])
         .expect("parse");
         let Subcommand::Ask(AskCommand {
             payload,
+            payload_arg,
+            session_id,
+            add_dir,
+            cwd,
+            debug_save_prompts,
+            debug_stream_error,
+        }) = cli.subcommand
+        else {
+            unreachable!()
+        };
+        assert!(payload.is_none());
+        assert_eq!(
+            payload_arg,
+            Some(
+                r#"{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}"#
+                    .to_string()
+            )
+        );
+        assert_eq!(session_id.as_str(), "abc");
+        assert_eq!(add_dir, vec![std::path::PathBuf::from("/tmp/foo")]);
+        assert_eq!(cwd.as_deref(), Some(std::path::Path::new("/tmp")));
+        assert!(!debug_save_prompts);
+        assert!(debug_stream_error.is_none());
+    }
+
+    #[test]
+    fn ask_subcommand_parses_payload_flag() {
+        let cli = MultitoolCli::try_parse_from([
+            "blueprintlm-cli",
+            "ask",
+            "--payload",
+            r#"{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}"#,
+            "--session-id",
+            "abc",
+        ])
+        .expect("parse");
+        let Subcommand::Ask(AskCommand {
+            payload,
+            payload_arg,
             session_id,
             add_dir,
             cwd,
@@ -801,11 +884,15 @@ mod tests {
         };
         assert_eq!(
             payload,
-            r#"{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}"#
+            Some(
+                r#"{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}"#
+                    .to_string()
+            )
         );
+        assert!(payload_arg.is_none());
         assert_eq!(session_id.as_str(), "abc");
-        assert_eq!(add_dir, vec![std::path::PathBuf::from("/tmp/foo")]);
-        assert_eq!(cwd.as_deref(), Some(std::path::Path::new("/tmp")));
+        assert!(add_dir.is_empty());
+        assert!(cwd.is_none());
         assert!(!debug_save_prompts);
         assert!(debug_stream_error.is_none());
     }

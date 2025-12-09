@@ -180,6 +180,11 @@ impl RolloutRecorder {
         Ok(Self { tx, rollout_path })
     }
 
+    /// Append rollout items to the session log.
+    pub async fn append_items(&self, items: &[RolloutItem]) -> std::io::Result<()> {
+        self.record_items(items).await
+    }
+
     pub(crate) async fn record_items(&self, items: &[RolloutItem]) -> std::io::Result<()> {
         let mut filtered = Vec::new();
         for item in items {
