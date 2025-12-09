@@ -36,7 +36,6 @@ use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::RolloutLine;
 use codex_protocol::protocol::SessionConfiguredEvent;
 use codex_protocol::protocol::SessionSource;
-use codex_protocol::user_input::UserInput;
 use futures_util::StreamExt;
 use serde::Serialize;
 use std::env;
@@ -93,9 +92,9 @@ enum Subcommand {
 
 #[derive(Debug, Parser)]
 struct AskCommand {
-    /// Prompt to send. Use `-` to read from stdin.
-    #[arg(value_name = "PROMPT")]
-    prompt: String,
+    /// JSON payload representing one or more ResponseInputItem entries.
+    #[arg(value_name = "PAYLOAD_JSON")]
+    payload: String,
 
     /// Resume an existing session by id instead of starting a new one.
     #[arg(long = "session-id", value_name = "SESSION_ID")]
@@ -155,6 +154,10 @@ struct StartSessionCommand {
     /// Project identifier to record in session metadata.
     #[arg(long = "project-id", value_name = "PROJECT_ID")]
     project_id: String,
+
+    /// Inline contents of AGENTS.md to use for this session (use '-' to read from stdin).
+    #[arg(long = "project-doc", value_name = "AGENTS_MD", required = true)]
+    project_doc: String,
 
     /// Simulate a start-session failure for testing error handling.
     #[arg(long = "debug-start-session-error", value_name = "KIND", hide = true)]
@@ -223,7 +226,7 @@ async fn cli_main(_codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<(
 
     match subcommand {
         Subcommand::Ask(AskCommand {
-            prompt,
+            payload,
             session_id,
             debug_save_prompts,
             add_dir,
@@ -231,7 +234,7 @@ async fn cli_main(_codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<(
             debug_stream_error,
         }) => {
             run_ask(
-                prompt,
+                payload,
                 session_id,
                 debug_save_prompts,
                 add_dir,
@@ -286,12 +289,14 @@ async fn cli_main(_codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<(
             add_dir,
             cwd,
             project_id,
+            project_doc,
             debug_start_session_error,
         }) => {
             run_start_session(
                 add_dir,
                 cwd,
                 project_id,
+                project_doc,
                 debug_start_session_error,
                 root_config_overrides,
             )
@@ -406,7 +411,7 @@ fn response_items_from_history(
 }
 
 async fn run_ask(
-    prompt: String,
+    payload: String,
     session_id: String,
     debug_save_prompts: bool,
     add_dir: Vec<PathBuf>,
@@ -414,14 +419,6 @@ async fn run_ask(
     debug_stream_error: Option<String>,
     root_config_overrides: CliConfigOverrides,
 ) -> anyhow::Result<()> {
-    let mut stdin_buf = String::new();
-    let prompt_text = if prompt == "-" {
-        std::io::stdin().read_to_string(&mut stdin_buf)?;
-        stdin_buf
-    } else {
-        prompt
-    };
-
     let cli_overrides = root_config_overrides
         .parse_overrides()
         .map_err(anyhow::Error::msg)?;
@@ -509,13 +506,25 @@ async fn run_ask(
         SessionSource::Cli,
     );
 
-    let response_input: ResponseInputItem = ResponseInputItem::from(vec![UserInput::Text {
-        text: prompt_text.clone(),
-    }]);
-    let response_item: ResponseItem = response_input.into();
+    let response_inputs: Vec<ResponseInputItem> = match serde_json::from_str::<Vec<ResponseInputItem>>(
+        &payload,
+    ) {
+        Ok(items) => items,
+        Err(err_vec) => match serde_json::from_str::<ResponseInputItem>(&payload) {
+            Ok(item) => vec![item],
+            Err(err_single) => {
+                emit_error(format!(
+                    "Invalid payload JSON (array parse error: {err_vec}; single parse error: {err_single})"
+                ))?;
+                return Ok(());
+            }
+        },
+    };
     let mut prompt = Prompt::default();
     prompt.input.append(&mut history_items);
-    prompt.input.push(response_item);
+    for item in response_inputs {
+        prompt.input.push(ResponseItem::from(item));
+    }
 
     let tools_config = ToolsConfig::new(&ToolsConfigParams {
         model_family: &model_family,
@@ -652,6 +661,7 @@ async fn run_start_session(
     add_dir: Vec<PathBuf>,
     cwd: Option<PathBuf>,
     project_id: String,
+    project_doc: String,
     debug_start_session_error: Option<String>,
     root_config_overrides: CliConfigOverrides,
 ) -> anyhow::Result<()> {
@@ -668,6 +678,19 @@ async fn run_start_session(
         return Ok(());
     }
 
+    let mut project_doc_override = project_doc;
+    if project_doc_override.trim().is_empty() {
+        anyhow::bail!("--project-doc must not be empty");
+    }
+    if project_doc_override == "-" {
+        let mut buf = String::new();
+        std::io::stdin().read_to_string(&mut buf)?;
+        if buf.trim().is_empty() {
+            anyhow::bail!("--project-doc stdin content must not be empty");
+        }
+        project_doc_override = buf;
+    }
+
     let cli_overrides = root_config_overrides
         .parse_overrides()
         .map_err(anyhow::Error::msg)?;
@@ -677,7 +700,9 @@ async fn run_start_session(
         project_id: Some(project_id),
         ..Default::default()
     };
-    let config = Config::load_with_cli_overrides(cli_overrides, config_overrides).await?;
+    let mut config = Config::load_with_cli_overrides(cli_overrides, config_overrides).await?;
+    config.user_instructions = None;
+    config.project_doc_override = Some(project_doc_override);
 
     let auth_manager = AuthManager::shared(
         config.codex_home.clone(),
@@ -754,17 +779,17 @@ mod tests {
         let cli = MultitoolCli::try_parse_from([
             "blueprintlm-cli",
             "ask",
+            r#"{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}"#,
             "--session-id",
             "abc",
             "-C",
             "/tmp",
             "--add-dir",
             "/tmp/foo",
-            "hello",
         ])
         .expect("parse");
         let Subcommand::Ask(AskCommand {
-            prompt,
+            payload,
             session_id,
             add_dir,
             cwd,
@@ -774,7 +799,10 @@ mod tests {
         else {
             unreachable!()
         };
-        assert_eq!(prompt, "hello");
+        assert_eq!(
+            payload,
+            r#"{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}"#
+        );
         assert_eq!(session_id.as_str(), "abc");
         assert_eq!(add_dir, vec![std::path::PathBuf::from("/tmp/foo")]);
         assert_eq!(cwd.as_deref(), Some(std::path::Path::new("/tmp")));
@@ -799,6 +827,8 @@ mod tests {
             "/tmp/foo",
             "--project-id",
             "proj123",
+            "--project-doc",
+            "agents text",
             "--debug-start-session-error",
             "io",
         ])
@@ -807,6 +837,7 @@ mod tests {
             add_dir,
             cwd,
             project_id,
+            project_doc,
             debug_start_session_error,
         }) = cli.subcommand
         else {
@@ -815,6 +846,7 @@ mod tests {
         assert_eq!(add_dir, vec![std::path::PathBuf::from("/tmp/foo")]);
         assert_eq!(cwd.as_deref(), Some(std::path::Path::new("/tmp")));
         assert_eq!(project_id, "proj123");
+        assert_eq!(project_doc, "agents text");
         assert_eq!(debug_start_session_error.as_deref(), Some("io"));
     }
 }

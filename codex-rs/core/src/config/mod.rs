@@ -194,6 +194,9 @@ pub struct Config {
     /// Additional filenames to try when looking for project-level docs.
     pub project_doc_fallback_filenames: Vec<String>,
 
+    /// Inline project documentation to use instead of reading AGENTS.md from disk.
+    pub project_doc_override: Option<String>,
+
     // todo(aibrahim): this should be used in the override model family
     /// Token budget applied when storing tool/function outputs in the context manager.
     pub tool_output_token_limit: Option<usize>,
@@ -1214,6 +1217,7 @@ impl Config {
                     }
                 })
                 .collect(),
+            project_doc_override: None,
             tool_output_token_limit: cfg.tool_output_token_limit,
             codex_home,
             history,
@@ -2972,6 +2976,7 @@ model_verbosity = "high"
                 model_providers: fixture.model_provider_map.clone(),
                 project_doc_max_bytes: PROJECT_DOC_MAX_BYTES,
                 project_doc_fallback_filenames: Vec::new(),
+                project_doc_override: None,
                 tool_output_token_limit: None,
                 codex_home: fixture.codex_home(),
                 history: History::default(),
@@ -3048,6 +3053,7 @@ model_verbosity = "high"
             model_providers: fixture.model_provider_map.clone(),
             project_doc_max_bytes: PROJECT_DOC_MAX_BYTES,
             project_doc_fallback_filenames: Vec::new(),
+            project_doc_override: None,
             tool_output_token_limit: None,
             codex_home: fixture.codex_home(),
             history: History::default(),
@@ -3139,6 +3145,7 @@ model_verbosity = "high"
             model_providers: fixture.model_provider_map.clone(),
             project_doc_max_bytes: PROJECT_DOC_MAX_BYTES,
             project_doc_fallback_filenames: Vec::new(),
+            project_doc_override: None,
             tool_output_token_limit: None,
             codex_home: fixture.codex_home(),
             history: History::default(),
@@ -3216,6 +3223,7 @@ model_verbosity = "high"
             model_providers: fixture.model_provider_map.clone(),
             project_doc_max_bytes: PROJECT_DOC_MAX_BYTES,
             project_doc_fallback_filenames: Vec::new(),
+            project_doc_override: None,
             tool_output_token_limit: None,
             codex_home: fixture.codex_home(),
             history: History::default(),

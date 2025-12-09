@@ -21,6 +21,7 @@ use dunce::canonicalize as normalize_path;
 use std::path::PathBuf;
 use tokio::io::AsyncReadExt;
 use tracing::error;
+use tracing::warn;
 
 /// Default filename scanned for project-level docs.
 pub const DEFAULT_PROJECT_DOC_FILENAME: &str = "AGENTS.md";
@@ -89,6 +90,22 @@ pub async fn read_project_docs(config: &Config) -> std::io::Result<Option<String
 
     if max_total == 0 {
         return Ok(None);
+    }
+
+    if let Some(doc) = config.project_doc_override.clone() {
+        if doc.trim().is_empty() {
+            return Ok(None);
+        }
+        let doc_bytes = doc.as_bytes();
+        if doc_bytes.len() > max_total {
+            warn!(
+                "Project doc override exceeds configured budget ({} bytes) - truncating.",
+                max_total,
+            );
+            let truncated = String::from_utf8_lossy(&doc_bytes[..max_total]).to_string();
+            return Ok(Some(truncated));
+        }
+        return Ok(Some(doc));
     }
 
     let paths = discover_project_doc_paths(config)?;
@@ -244,6 +261,7 @@ mod tests {
     use super::*;
     use crate::config::ConfigOverrides;
     use crate::config::ConfigToml;
+    use pretty_assertions::assert_eq;
     use std::fs;
     use std::path::PathBuf;
     use tempfile::TempDir;
@@ -400,6 +418,37 @@ mod tests {
         let res = get_user_instructions(&make_config(&tmp, 4096, Some(INSTRUCTIONS))).await;
 
         assert_eq!(res, Some(INSTRUCTIONS.to_string()));
+    }
+
+    #[tokio::test]
+    async fn project_doc_override_skips_files() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        fs::write(tmp.path().join("AGENTS.md"), "from disk").unwrap();
+
+        let mut cfg = make_config(&tmp, 4096, None);
+        cfg.project_doc_override = Some("override doc".to_string());
+
+        let res = read_project_docs(&cfg)
+            .await
+            .expect("doc expected")
+            .expect("override expected");
+
+        assert_eq!(res, "override doc");
+    }
+
+    #[tokio::test]
+    async fn project_doc_override_respects_limit() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+
+        let mut cfg = make_config(&tmp, 4, None);
+        cfg.project_doc_override = Some("abcdef".to_string());
+
+        let res = read_project_docs(&cfg)
+            .await
+            .expect("doc expected")
+            .expect("override expected");
+
+        assert_eq!(res, "abcd");
     }
 
     /// When both the repository root and the working directory contain

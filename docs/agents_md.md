@@ -47,4 +47,14 @@ You can configure those fallbacks in `~/.codex/config.toml` (or another profile)
 project_doc_fallback_filenames = ["TEAM_GUIDE.md", ".agents.md"]
 ```
 
+## Supplying Instructions Directly
+
+If you already have the combined `AGENTS.md` contents on hand, you can pass them straight into the CLI when starting a session. Use `--project-doc` on `blueprintlm start-session` to inject the text instead of letting Codex read from disk. Passing `-` reads from stdin, which is convenient for piping:
+
+```shell
+cat AGENTS.md | blueprintlm start-session --project-id my-project --project-doc -
+```
+
+The `start-session` command requires `--project-doc` and ignores other `AGENTS.md` files when you provide it.
+
 For additional configuration details, see [Config](../docs/config.md) and revisit the [Memory with AGENTS.md guide](../docs/getting-started.md#memory-with-agentsmd) for practical usage tips.
