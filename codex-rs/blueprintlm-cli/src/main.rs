@@ -41,7 +41,9 @@ use futures_util::StreamExt;
 use serde::Serialize;
 use std::env;
 use std::fs;
+use std::io;
 use std::io::Read;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -73,6 +75,10 @@ enum Subcommand {
 
     /// List recorded sessions as JSON.
     Sessions(SessionsCommand),
+
+    /// Fetch rollout history for a recorded session as JSON.
+    #[clap(name = "rollout-history")]
+    RolloutHistory(RolloutHistoryCommand),
 
     /// Start a session and print session metadata as JSON.
     #[clap(name = "start-session")]
@@ -144,6 +150,13 @@ struct SessionsCommand {
     /// Filter by project id.
     #[arg(long = "project-id", value_name = "PROJECT_ID")]
     project_id: Option<String>,
+}
+
+#[derive(Debug, Parser)]
+struct RolloutHistoryCommand {
+    /// Session id to read history for.
+    #[arg(long = "session-id", value_name = "SESSION_ID")]
+    session_id: String,
 }
 
 #[derive(Debug, Parser)]
@@ -294,6 +307,9 @@ async fn cli_main(_codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<(
             let json = serde_json::to_string_pretty(&conversations)?;
             println!("{json}");
         }
+        Subcommand::RolloutHistory(RolloutHistoryCommand { session_id }) => {
+            run_rollout_history(session_id, root_config_overrides).await?;
+        }
         Subcommand::StartSession(StartSessionCommand {
             add_dir,
             cwd,
@@ -385,6 +401,15 @@ struct StartSessionResponse {
     error: Option<String>,
 }
 
+#[derive(Serialize)]
+struct RolloutHistoryResponse {
+    success: bool,
+    error: Option<String>,
+    session_id: Option<String>,
+    rollout_path: Option<String>,
+    history: Vec<RolloutLine>,
+}
+
 fn emit_error(error: String) -> anyhow::Result<()> {
     let response = AskResponse {
         success: false,
@@ -417,6 +442,56 @@ fn response_items_from_history(
             "Session history not found for provided session id"
         )),
     }
+}
+
+fn emit_rollout_history_error(error: String) -> anyhow::Result<()> {
+    let response = RolloutHistoryResponse {
+        success: false,
+        error: Some(error),
+        session_id: None,
+        rollout_path: None,
+        history: Vec::new(),
+    };
+    let json = serde_json::to_string_pretty(&response)?;
+    println!("{json}");
+    Ok(())
+}
+
+fn read_full_rollout(path: &Path) -> io::Result<(Vec<RolloutLine>, ConversationId)> {
+    let text = fs::read_to_string(path)?;
+    if text.trim().is_empty() {
+        return Err(io::Error::other("empty session file"));
+    }
+
+    let mut history: Vec<RolloutLine> = Vec::new();
+    let mut conversation_id: Option<ConversationId> = None;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<RolloutLine>(trimmed) {
+            Ok(rollout_line) => {
+                if conversation_id.is_none()
+                    && let RolloutItem::SessionMeta(session_meta_line) = &rollout_line.item
+                {
+                    conversation_id = Some(session_meta_line.meta.id);
+                }
+                history.push(rollout_line);
+            }
+            Err(err) => {
+                eprintln!("Failed to parse rollout line: {err}");
+            }
+        }
+    }
+
+    let Some(conversation_id) = conversation_id else {
+        return Err(io::Error::other(
+            "failed to parse conversation ID from rollout file",
+        ));
+    };
+
+    Ok((history, conversation_id))
 }
 
 async fn run_ask(
@@ -701,6 +776,63 @@ async fn run_ask(
     Ok(())
 }
 
+async fn run_rollout_history(
+    session_id: String,
+    root_config_overrides: CliConfigOverrides,
+) -> anyhow::Result<()> {
+    let cli_overrides = root_config_overrides
+        .parse_overrides()
+        .map_err(anyhow::Error::msg)?;
+    let config = Config::load_with_cli_overrides(cli_overrides, ConfigOverrides::default()).await?;
+
+    let conversation_id = match ConversationId::from_string(&session_id) {
+        Ok(id) => id,
+        Err(err) => {
+            emit_rollout_history_error(err.to_string())?;
+            return Ok(());
+        }
+    };
+
+    let rollout_path = match find_conversation_path_by_id_str(&config.codex_home, &session_id).await
+    {
+        Ok(Some(path)) => path,
+        Ok(None) => {
+            emit_rollout_history_error(format!("Session with id {session_id} not found"))?;
+            return Ok(());
+        }
+        Err(err) => {
+            emit_rollout_history_error(format!("Failed to locate session: {err}"))?;
+            return Ok(());
+        }
+    };
+
+    let (history, parsed_id) = match read_full_rollout(&rollout_path) {
+        Ok(result) => result,
+        Err(err) => {
+            emit_rollout_history_error(format!("Failed to read rollout history: {err}"))?;
+            return Ok(());
+        }
+    };
+
+    if parsed_id != conversation_id {
+        emit_rollout_history_error(
+            "Session id mismatch between provided id and rollout history".to_string(),
+        )?;
+        return Ok(());
+    }
+
+    let response = RolloutHistoryResponse {
+        success: true,
+        error: None,
+        session_id: Some(conversation_id.to_string()),
+        rollout_path: Some(rollout_path.to_string_lossy().into_owned()),
+        history,
+    };
+    let json = serde_json::to_string_pretty(&response)?;
+    println!("{json}");
+    Ok(())
+}
+
 async fn run_start_session(
     add_dir: Vec<PathBuf>,
     cwd: Option<PathBuf>,
@@ -816,7 +948,11 @@ async fn run_list_models(root_config_overrides: CliConfigOverrides) -> anyhow::R
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codex_protocol::protocol::SessionMeta;
+    use codex_protocol::protocol::SessionMetaLine;
     use pretty_assertions::assert_eq;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
 
     #[test]
     fn ask_subcommand_parses_prompt() {
@@ -935,5 +1071,60 @@ mod tests {
         assert_eq!(project_id, "proj123");
         assert_eq!(project_doc, "agents text");
         assert_eq!(debug_start_session_error.as_deref(), Some("io"));
+    }
+
+    #[test]
+    fn rollout_history_subcommand_parses() {
+        let cli = MultitoolCli::try_parse_from([
+            "blueprintlm-cli",
+            "rollout-history",
+            "--session-id",
+            "abc",
+        ])
+        .expect("parse");
+        let Subcommand::RolloutHistory(RolloutHistoryCommand { session_id }) = cli.subcommand
+        else {
+            unreachable!()
+        };
+        assert_eq!(session_id.as_str(), "abc");
+    }
+
+    #[test]
+    fn read_full_rollout_parses_conversation_id() {
+        let conversation_id = ConversationId::new();
+        let timestamp = "2024-01-02T03:04:05.000Z".to_string();
+        let meta_line = RolloutLine {
+            timestamp: timestamp.clone(),
+            item: RolloutItem::SessionMeta(SessionMetaLine {
+                meta: SessionMeta {
+                    id: conversation_id,
+                    timestamp: timestamp.clone(),
+                    cwd: PathBuf::from("/tmp"),
+                    originator: "test-origin".to_string(),
+                    cli_version: "0.0.0-test".to_string(),
+                    instructions: None,
+                    source: SessionSource::Cli,
+                    model_provider: Some("provider".to_string()),
+                    project_id: Some("project".to_string()),
+                },
+                git: None,
+            }),
+        };
+        let mut file = NamedTempFile::new().expect("temp file");
+        let serialized = serde_json::to_string(&meta_line).expect("serialize rollout line");
+        writeln!(file, "{serialized}").expect("write rollout line");
+        writeln!(file, "{{invalid json").expect("write invalid line");
+
+        let (history, parsed_id) = read_full_rollout(file.path()).expect("load rollout");
+        assert_eq!(parsed_id, conversation_id);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].timestamp, timestamp);
+    }
+
+    #[test]
+    fn read_full_rollout_errors_on_empty_file() {
+        let file = NamedTempFile::new().expect("temp file");
+        let result = read_full_rollout(file.path());
+        assert!(result.is_err());
     }
 }

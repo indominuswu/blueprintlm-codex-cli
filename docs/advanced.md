@@ -20,6 +20,16 @@ By comparison, the non-interactive mode (`codex exec`) defaults to `RUST_LOG=err
 
 See the Rust documentation on [`RUST_LOG`](https://docs.rs/env_logger/latest/env_logger/#enabling-logging) for more information on the configuration options.
 
+## Rollout history
+
+To inspect everything Codex recorded for an earlier session, print the rollout file as JSON:
+
+```
+blueprintlm rollout-history --session-id <SESSION_ID>
+```
+
+The output includes `success`, `error`, `session_id`, `rollout_path`, and `history` (each entry is a `RolloutLine` with a timestamp and payload).
+
 ## Model Context Protocol (MCP)
 
 The Codex CLI and IDE extension is a MCP client which means that it can be configured to connect to MCP servers. For more information, refer to the [`config docs`](./config.md#mcp-integration).
