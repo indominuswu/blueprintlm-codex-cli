@@ -1821,6 +1821,7 @@ impl CodexMessageProcessor {
             INTERACTIVE_SESSION_SOURCES,
             model_provider_filter.as_deref(),
             fallback_provider.as_str(),
+            None,
         )
         .await
         {

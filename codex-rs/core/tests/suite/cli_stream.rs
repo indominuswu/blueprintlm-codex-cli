@@ -81,6 +81,7 @@ async fn chat_mode_stream_cli() {
         &[],
         Some(provider_filter.as_slice()),
         "mock",
+        None,
     )
     .await
     .expect("list conversations");

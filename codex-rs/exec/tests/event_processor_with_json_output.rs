@@ -76,6 +76,7 @@ fn session_configured_produces_thread_started_event() {
             session_id,
             model: "codex-mini-latest".to_string(),
             model_provider_id: "test-provider".to_string(),
+            project_id: None,
             approval_policy: AskForApproval::Never,
             sandbox_policy: SandboxPolicy::ReadOnly,
             cwd: PathBuf::from("/home/user/project"),

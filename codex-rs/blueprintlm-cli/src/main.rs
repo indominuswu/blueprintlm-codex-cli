@@ -136,6 +136,10 @@ struct SessionsCommand {
     /// Filter by model provider (comma-separated). Defaults to all.
     #[arg(long = "provider", value_delimiter = ',', value_name = "PROVIDER")]
     providers: Vec<String>,
+
+    /// Filter by project id.
+    #[arg(long = "project-id", value_name = "PROJECT_ID")]
+    project_id: Option<String>,
 }
 
 #[derive(Debug, Parser)]
@@ -147,6 +151,10 @@ struct StartSessionCommand {
     /// Tell the agent to use the specified directory as its working root.
     #[clap(long = "cd", short = 'C', value_name = "DIR")]
     cwd: Option<PathBuf>,
+
+    /// Project identifier to record in session metadata.
+    #[arg(long = "project-id", value_name = "PROJECT_ID")]
+    project_id: String,
 
     /// Simulate a start-session failure for testing error handling.
     #[arg(long = "debug-start-session-error", value_name = "KIND", hide = true)]
@@ -237,6 +245,7 @@ async fn cli_main(_codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<(
             page_size,
             cursor,
             providers,
+            project_id,
         }) => {
             let cursor = if let Some(cursor) = cursor {
                 Some(
@@ -267,6 +276,7 @@ async fn cli_main(_codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<(
                 ],
                 provider_refs,
                 config.model_provider_id.as_str(),
+                project_id.as_deref(),
             )
             .await?;
             let json = serde_json::to_string_pretty(&conversations)?;
@@ -275,11 +285,13 @@ async fn cli_main(_codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<(
         Subcommand::StartSession(StartSessionCommand {
             add_dir,
             cwd,
+            project_id,
             debug_start_session_error,
         }) => {
             run_start_session(
                 add_dir,
                 cwd,
+                project_id,
                 debug_start_session_error,
                 root_config_overrides,
             )
@@ -639,6 +651,7 @@ async fn run_ask(
 async fn run_start_session(
     add_dir: Vec<PathBuf>,
     cwd: Option<PathBuf>,
+    project_id: String,
     debug_start_session_error: Option<String>,
     root_config_overrides: CliConfigOverrides,
 ) -> anyhow::Result<()> {
@@ -661,6 +674,7 @@ async fn run_start_session(
     let config_overrides = ConfigOverrides {
         cwd: cwd.clone(),
         additional_writable_roots: add_dir.clone(),
+        project_id: Some(project_id),
         ..Default::default()
     };
     let config = Config::load_with_cli_overrides(cli_overrides, config_overrides).await?;
@@ -783,6 +797,8 @@ mod tests {
             "/tmp",
             "--add-dir",
             "/tmp/foo",
+            "--project-id",
+            "proj123",
             "--debug-start-session-error",
             "io",
         ])
@@ -790,6 +806,7 @@ mod tests {
         let Subcommand::StartSession(StartSessionCommand {
             add_dir,
             cwd,
+            project_id,
             debug_start_session_error,
         }) = cli.subcommand
         else {
@@ -797,6 +814,7 @@ mod tests {
         };
         assert_eq!(add_dir, vec![std::path::PathBuf::from("/tmp/foo")]);
         assert_eq!(cwd.as_deref(), Some(std::path::Path::new("/tmp")));
+        assert_eq!(project_id, "proj123");
         assert_eq!(debug_start_session_error.as_deref(), Some("io"));
     }
 }

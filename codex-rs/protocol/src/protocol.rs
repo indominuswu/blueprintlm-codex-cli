@@ -1176,6 +1176,8 @@ pub struct SessionMeta {
     #[serde(default)]
     pub source: SessionSource,
     pub model_provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
 }
 
 impl Default for SessionMeta {
@@ -1189,6 +1191,7 @@ impl Default for SessionMeta {
             instructions: None,
             source: SessionSource::default(),
             model_provider: None,
+            project_id: None,
         }
     }
 }
@@ -1622,6 +1625,9 @@ pub struct SessionConfiguredEvent {
 
     pub model_provider_id: String,
 
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+
     /// When to escalate for approval for execution
     pub approval_policy: AskForApproval,
 
@@ -1767,6 +1773,7 @@ mod tests {
                 session_id: conversation_id,
                 model: "codex-mini-latest".to_string(),
                 model_provider_id: "openai".to_string(),
+                project_id: None,
                 approval_policy: AskForApproval::Never,
                 sandbox_policy: SandboxPolicy::ReadOnly,
                 cwd: PathBuf::from("/home/user/project"),

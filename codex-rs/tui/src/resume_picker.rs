@@ -95,6 +95,7 @@ pub async fn run_resume_picker(
                 INTERACTIVE_SESSION_SOURCES,
                 Some(provider_filter.as_slice()),
                 request.default_provider.as_str(),
+                None,
             )
             .await;
             let _ = tx.send(BackgroundEvent::PageLoaded {
@@ -1363,6 +1364,7 @@ mod tests {
             INTERACTIVE_SESSION_SOURCES,
             Some(&[String::from("openai")]),
             "openai",
+            None,
         ))
         .expect("list conversations");
 

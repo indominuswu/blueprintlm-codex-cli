@@ -612,6 +612,7 @@ impl Session {
                 session_id: conversation_id,
                 model: session_configuration.model.clone(),
                 model_provider_id: config.model_provider_id.clone(),
+                project_id: config.project_id.clone(),
                 approval_policy: session_configuration.approval_policy,
                 sandbox_policy: session_configuration.sandbox_policy.clone(),
                 cwd: session_configuration.cwd.clone(),

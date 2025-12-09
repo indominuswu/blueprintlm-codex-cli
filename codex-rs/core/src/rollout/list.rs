@@ -53,6 +53,7 @@ struct HeadTailSummary {
     saw_user_event: bool,
     source: Option<SessionSource>,
     model_provider: Option<String>,
+    project_id: Option<String>,
     created_at: Option<String>,
     updated_at: Option<String>,
 }
@@ -109,6 +110,7 @@ pub async fn get_conversations(
     allowed_sources: &[SessionSource],
     model_providers: Option<&[String]>,
     default_provider: &str,
+    project_id: Option<&str>,
 ) -> io::Result<ConversationsPage> {
     let mut root = codex_home.to_path_buf();
     root.push(SESSIONS_SUBDIR);
@@ -133,6 +135,7 @@ pub async fn get_conversations(
         anchor,
         allowed_sources,
         provider_matcher.as_ref(),
+        project_id,
     )
     .await?;
     Ok(result)
@@ -148,6 +151,7 @@ async fn traverse_directories_for_paths(
     anchor: Option<Cursor>,
     allowed_sources: &[SessionSource],
     provider_matcher: Option<&ProviderMatcher<'_>>,
+    project_id: Option<&str>,
 ) -> io::Result<ConversationsPage> {
     let mut items: Vec<ConversationItem> = Vec::with_capacity(page_size);
     let mut scanned_files = 0usize;
@@ -218,6 +222,15 @@ async fn traverse_directories_for_paths(
                     if let Some(matcher) = provider_matcher {
                         let provider_ok = matcher.matches(summary.model_provider.as_deref());
                         if !provider_ok {
+                            continue;
+                        }
+                    }
+                    if let Some(expected_project) = project_id {
+                        let project_ok = summary
+                            .project_id
+                            .as_deref()
+                            .is_some_and(|project| project == expected_project);
+                        if !project_ok {
                             continue;
                         }
                     }
@@ -402,6 +415,7 @@ async fn read_head_summary(path: &Path, head_limit: usize) -> io::Result<HeadTai
             RolloutItem::SessionMeta(session_meta_line) => {
                 summary.source = Some(session_meta_line.meta.source.clone());
                 summary.model_provider = session_meta_line.meta.model_provider.clone();
+                summary.project_id = session_meta_line.meta.project_id.clone();
                 summary.created_at = summary
                     .created_at
                     .clone()

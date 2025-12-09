@@ -215,6 +215,7 @@ pub async fn run_main(
         base_instructions: None,
         developer_instructions: None,
         compact_prompt: None,
+        project_id: None,
         include_apply_patch_tool: None,
         show_raw_agent_reasoning: cli.oss.then_some(true),
         tools_web_search_request: None,
@@ -461,6 +462,7 @@ async fn run_ratatui_app(
             INTERACTIVE_SESSION_SOURCES,
             Some(provider_filter.as_slice()),
             &config.model_provider_id,
+            None,
         )
         .await
         {

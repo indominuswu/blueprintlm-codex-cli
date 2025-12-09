@@ -53,6 +53,7 @@ fn write_session_file(
         num_records,
         source,
         Some("test-provider"),
+        None,
     )
 }
 
@@ -63,6 +64,7 @@ fn write_session_file_with_provider(
     num_records: usize,
     source: Option<SessionSource>,
     model_provider: Option<&str>,
+    project_id: Option<&str>,
 ) -> std::io::Result<(OffsetDateTime, Uuid)> {
     let format: &[FormatItem] =
         format_description!("[year]-[month]-[day]T[hour]-[minute]-[second]");
@@ -94,6 +96,9 @@ fn write_session_file_with_provider(
     }
     if let Some(provider) = model_provider {
         payload["model_provider"] = serde_json::Value::String(provider.to_string());
+    }
+    if let Some(project_id) = project_id {
+        payload["project_id"] = serde_json::Value::String(project_id.to_string());
     }
 
     let meta = serde_json::json!({
@@ -169,6 +174,7 @@ async fn test_list_conversations_latest_first() {
         INTERACTIVE_SESSION_SOURCES,
         Some(provider_filter.as_slice()),
         TEST_PROVIDER,
+        None,
     )
     .await
     .unwrap();
@@ -318,6 +324,7 @@ async fn test_pagination_cursor() {
         INTERACTIVE_SESSION_SOURCES,
         Some(provider_filter.as_slice()),
         TEST_PROVIDER,
+        None,
     )
     .await
     .unwrap();
@@ -385,6 +392,7 @@ async fn test_pagination_cursor() {
         INTERACTIVE_SESSION_SOURCES,
         Some(provider_filter.as_slice()),
         TEST_PROVIDER,
+        None,
     )
     .await
     .unwrap();
@@ -452,6 +460,7 @@ async fn test_pagination_cursor() {
         INTERACTIVE_SESSION_SOURCES,
         Some(provider_filter.as_slice()),
         TEST_PROVIDER,
+        None,
     )
     .await
     .unwrap();
@@ -504,6 +513,7 @@ async fn test_get_conversation_contents() {
         INTERACTIVE_SESSION_SOURCES,
         Some(provider_filter.as_slice()),
         TEST_PROVIDER,
+        None,
     )
     .await
     .unwrap();
@@ -592,6 +602,7 @@ async fn test_updated_at_uses_file_mtime() -> Result<()> {
                 cli_version: "test_version".into(),
                 source: SessionSource::VSCode,
                 model_provider: Some("test-provider".into()),
+                project_id: None,
             },
             git: None,
         }),
@@ -631,6 +642,7 @@ async fn test_updated_at_uses_file_mtime() -> Result<()> {
         INTERACTIVE_SESSION_SOURCES,
         Some(provider_filter.as_slice()),
         TEST_PROVIDER,
+        None,
     )
     .await?;
     let item = page.items.first().expect("conversation item");
@@ -670,6 +682,7 @@ async fn test_stable_ordering_same_second_pagination() {
         INTERACTIVE_SESSION_SOURCES,
         Some(provider_filter.as_slice()),
         TEST_PROVIDER,
+        None,
     )
     .await
     .unwrap();
@@ -729,6 +742,7 @@ async fn test_stable_ordering_same_second_pagination() {
         INTERACTIVE_SESSION_SOURCES,
         Some(provider_filter.as_slice()),
         TEST_PROVIDER,
+        None,
     )
     .await
     .unwrap();
@@ -787,6 +801,7 @@ async fn test_source_filter_excludes_non_matching_sessions() {
         INTERACTIVE_SESSION_SOURCES,
         Some(provider_filter.as_slice()),
         TEST_PROVIDER,
+        None,
     )
     .await
     .unwrap();
@@ -801,9 +816,10 @@ async fn test_source_filter_excludes_non_matching_sessions() {
         path.ends_with("rollout-2025-08-02T10-00-00-00000000-0000-0000-0000-00000000002a.jsonl")
     }));
 
-    let all_sessions = get_conversations(home, 10, None, NO_SOURCE_FILTER, None, TEST_PROVIDER)
-        .await
-        .unwrap();
+    let all_sessions =
+        get_conversations(home, 10, None, NO_SOURCE_FILTER, None, TEST_PROVIDER, None)
+            .await
+            .unwrap();
     let all_paths: Vec<_> = all_sessions
         .items
         .into_iter()
@@ -834,6 +850,7 @@ async fn test_model_provider_filter_selects_only_matching_sessions() -> Result<(
         1,
         Some(SessionSource::VSCode),
         Some("openai"),
+        None,
     )?;
     write_session_file_with_provider(
         home,
@@ -842,6 +859,7 @@ async fn test_model_provider_filter_selects_only_matching_sessions() -> Result<(
         1,
         Some(SessionSource::VSCode),
         Some("beta"),
+        None,
     )?;
     write_session_file_with_provider(
         home,
@@ -849,6 +867,7 @@ async fn test_model_provider_filter_selects_only_matching_sessions() -> Result<(
         none_id,
         1,
         Some(SessionSource::VSCode),
+        None,
         None,
     )?;
 
@@ -862,6 +881,7 @@ async fn test_model_provider_filter_selects_only_matching_sessions() -> Result<(
         NO_SOURCE_FILTER,
         Some(openai_filter.as_slice()),
         "openai",
+        None,
     )
     .await?;
     assert_eq!(openai_sessions.items.len(), 2);
@@ -887,6 +907,7 @@ async fn test_model_provider_filter_selects_only_matching_sessions() -> Result<(
         NO_SOURCE_FILTER,
         Some(beta_filter.as_slice()),
         "openai",
+        None,
     )
     .await?;
     assert_eq!(beta_sessions.items.len(), 1);
@@ -907,11 +928,103 @@ async fn test_model_provider_filter_selects_only_matching_sessions() -> Result<(
         NO_SOURCE_FILTER,
         Some(unknown_filter.as_slice()),
         "openai",
+        None,
     )
     .await?;
     assert!(unknown_sessions.items.is_empty());
 
-    let all_sessions = get_conversations(home, 10, None, NO_SOURCE_FILTER, None, "openai").await?;
+    let all_sessions =
+        get_conversations(home, 10, None, NO_SOURCE_FILTER, None, "openai", None).await?;
+    assert_eq!(all_sessions.items.len(), 3);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_project_id_filter_selects_only_matching_sessions() -> Result<()> {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path();
+
+    let alpha_id = Uuid::from_u128(11);
+    let beta_id = Uuid::from_u128(12);
+    let none_id = Uuid::from_u128(13);
+
+    write_session_file_with_provider(
+        home,
+        "2025-10-01T12-00-00",
+        alpha_id,
+        1,
+        Some(SessionSource::VSCode),
+        Some(TEST_PROVIDER),
+        Some("proj-alpha"),
+    )?;
+    write_session_file_with_provider(
+        home,
+        "2025-10-01T11-00-00",
+        beta_id,
+        1,
+        Some(SessionSource::VSCode),
+        Some(TEST_PROVIDER),
+        Some("proj-beta"),
+    )?;
+    write_session_file_with_provider(
+        home,
+        "2025-10-01T10-00-00",
+        none_id,
+        1,
+        Some(SessionSource::VSCode),
+        Some(TEST_PROVIDER),
+        None,
+    )?;
+
+    let alpha_sessions = get_conversations(
+        home,
+        10,
+        None,
+        NO_SOURCE_FILTER,
+        None,
+        TEST_PROVIDER,
+        Some("proj-alpha"),
+    )
+    .await?;
+    let alpha_ids: Vec<_> = alpha_sessions
+        .items
+        .iter()
+        .filter_map(|item| {
+            item.head
+                .first()
+                .and_then(|value| value.get("id"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+        .collect();
+    assert_eq!(alpha_ids, vec![alpha_id.to_string()]);
+
+    let beta_sessions = get_conversations(
+        home,
+        10,
+        None,
+        NO_SOURCE_FILTER,
+        None,
+        TEST_PROVIDER,
+        Some("proj-beta"),
+    )
+    .await?;
+    let beta_ids: Vec<_> = beta_sessions
+        .items
+        .iter()
+        .filter_map(|item| {
+            item.head
+                .first()
+                .and_then(|value| value.get("id"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+        .collect();
+    assert_eq!(beta_ids, vec![beta_id.to_string()]);
+
+    let all_sessions =
+        get_conversations(home, 10, None, NO_SOURCE_FILTER, None, TEST_PROVIDER, None).await?;
     assert_eq!(all_sessions.items.len(), 3);
 
     Ok(())
