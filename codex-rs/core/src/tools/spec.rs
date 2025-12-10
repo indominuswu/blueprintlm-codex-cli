@@ -16,6 +16,28 @@ use serde_json::json;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 
+mod ue5;
+
+#[cfg(test)]
+use self::ue5::create_compile_blueprint_tool;
+#[cfg(test)]
+use self::ue5::create_execute_console_command_tool;
+#[cfg(test)]
+use self::ue5::create_get_blueprint_graph_tool;
+#[cfg(test)]
+use self::ue5::create_get_project_context_tool;
+#[cfg(test)]
+use self::ue5::create_get_project_directory_tool;
+#[cfg(test)]
+use self::ue5::create_list_assets_tool;
+#[cfg(test)]
+use self::ue5::create_list_directory_tool;
+#[cfg(test)]
+use self::ue5::create_open_asset_in_editor_tool;
+#[cfg(test)]
+use self::ue5::create_query_log_tool;
+use self::ue5::register_ue5_tools;
+
 #[derive(Debug, Clone)]
 pub struct ToolsConfig {
     pub shell_type: ConfigShellToolType,
@@ -455,31 +477,6 @@ fn create_test_sync_tool() -> ToolSpec {
     ToolSpec::Function(ResponsesApiTool {
         name: "test_sync_tool".to_string(),
         description: "Internal synchronization helper used by Codex integration tests.".to_string(),
-        strict: false,
-        parameters: JsonSchema::Object {
-            properties,
-            required: None,
-            additional_properties: Some(false.into()),
-        },
-    })
-}
-
-fn create_get_project_directory_tool() -> ToolSpec {
-    let mut properties = BTreeMap::new();
-    properties.insert(
-        "project_dir".to_string(),
-        JsonSchema::String {
-            description: Some(
-                "Optional UE5 project directory hint. Actual resolution happens in the UE plugin."
-                    .to_string(),
-            ),
-        },
-    );
-
-    ToolSpec::Function(ResponsesApiTool {
-        name: "get_project_directory".to_string(),
-        description: "Declares the UE5 project directory resolver. Codex only surfaces the tool; the UE plugin executes it."
-            .to_string(),
         strict: false,
         parameters: JsonSchema::Object {
             properties,
@@ -986,7 +983,6 @@ pub(crate) fn build_specs(
     mcp_tools: Option<HashMap<String, mcp_types::Tool>>,
 ) -> ToolRegistryBuilder {
     use crate::tools::handlers::ApplyPatchHandler;
-    use crate::tools::handlers::GetProjectDirectoryHandler;
     use crate::tools::handlers::GrepFilesHandler;
     use crate::tools::handlers::ListDirHandler;
     use crate::tools::handlers::McpHandler;
@@ -1010,7 +1006,6 @@ pub(crate) fn build_specs(
     let mcp_handler = Arc::new(McpHandler);
     let mcp_resource_handler = Arc::new(McpResourceHandler);
     let shell_command_handler = Arc::new(ShellCommandHandler);
-    let get_project_directory_handler = Arc::new(GetProjectDirectoryHandler);
 
     match &config.shell_type {
         ConfigShellToolType::Default => {
@@ -1050,8 +1045,7 @@ pub(crate) fn build_specs(
 
     builder.push_spec(PLAN_TOOL.clone());
     builder.register_handler("update_plan", plan_handler);
-    builder.push_spec_with_parallel_support(create_get_project_directory_tool(), true);
-    builder.register_handler("get_project_directory", get_project_directory_handler);
+    register_ue5_tools(&mut builder);
 
     if let Some(apply_patch_tool_type) = &config.apply_patch_tool_type {
         match apply_patch_tool_type {
@@ -1153,13 +1147,8 @@ pub fn blueprintlm_build_specs(
     _config: &ToolsConfig,
     _mcp_tools: Option<HashMap<String, mcp_types::Tool>>,
 ) -> ToolRegistryBuilder {
-    use crate::tools::handlers::GetProjectDirectoryHandler;
-    use std::sync::Arc;
-
     let mut builder = ToolRegistryBuilder::new();
-    let get_project_directory_handler = Arc::new(GetProjectDirectoryHandler);
-    builder.push_spec_with_parallel_support(create_get_project_directory_tool(), true);
-    builder.register_handler("get_project_directory", get_project_directory_handler);
+    register_ue5_tools(&mut builder);
     builder
 }
 
@@ -1298,6 +1287,14 @@ mod tests {
             create_read_mcp_resource_tool(),
             PLAN_TOOL.clone(),
             create_get_project_directory_tool(),
+            create_get_project_context_tool(),
+            create_list_directory_tool(),
+            create_list_assets_tool(),
+            create_open_asset_in_editor_tool(),
+            create_get_blueprint_graph_tool(),
+            create_compile_blueprint_tool(),
+            create_query_log_tool(),
+            create_execute_console_command_tool(),
             create_apply_patch_freeform_tool(),
             ToolSpec::WebSearch {},
             create_view_image_tool(),
@@ -1343,6 +1340,14 @@ mod tests {
                 "read_mcp_resource",
                 "update_plan",
                 "get_project_directory",
+                "get_project_context",
+                "list_directory",
+                "list_assets",
+                "open_asset_in_editor",
+                "get_blueprint_graph",
+                "compile_blueprint",
+                "query_log",
+                "execute_console_command",
                 "apply_patch",
                 "view_image",
             ],
@@ -1361,6 +1366,14 @@ mod tests {
                 "read_mcp_resource",
                 "update_plan",
                 "get_project_directory",
+                "get_project_context",
+                "list_directory",
+                "list_assets",
+                "open_asset_in_editor",
+                "get_blueprint_graph",
+                "compile_blueprint",
+                "query_log",
+                "execute_console_command",
                 "apply_patch",
                 "view_image",
             ],
@@ -1382,6 +1395,14 @@ mod tests {
                 "read_mcp_resource",
                 "update_plan",
                 "get_project_directory",
+                "get_project_context",
+                "list_directory",
+                "list_assets",
+                "open_asset_in_editor",
+                "get_blueprint_graph",
+                "compile_blueprint",
+                "query_log",
+                "execute_console_command",
                 "apply_patch",
                 "web_search",
                 "view_image",
@@ -1404,6 +1425,14 @@ mod tests {
                 "read_mcp_resource",
                 "update_plan",
                 "get_project_directory",
+                "get_project_context",
+                "list_directory",
+                "list_assets",
+                "open_asset_in_editor",
+                "get_blueprint_graph",
+                "compile_blueprint",
+                "query_log",
+                "execute_console_command",
                 "apply_patch",
                 "web_search",
                 "view_image",
@@ -1423,6 +1452,14 @@ mod tests {
                 "read_mcp_resource",
                 "update_plan",
                 "get_project_directory",
+                "get_project_context",
+                "list_directory",
+                "list_assets",
+                "open_asset_in_editor",
+                "get_blueprint_graph",
+                "compile_blueprint",
+                "query_log",
+                "execute_console_command",
                 "view_image",
             ],
         );
@@ -1440,6 +1477,14 @@ mod tests {
                 "read_mcp_resource",
                 "update_plan",
                 "get_project_directory",
+                "get_project_context",
+                "list_directory",
+                "list_assets",
+                "open_asset_in_editor",
+                "get_blueprint_graph",
+                "compile_blueprint",
+                "query_log",
+                "execute_console_command",
                 "apply_patch",
                 "view_image",
             ],
@@ -1458,6 +1503,14 @@ mod tests {
                 "read_mcp_resource",
                 "update_plan",
                 "get_project_directory",
+                "get_project_context",
+                "list_directory",
+                "list_assets",
+                "open_asset_in_editor",
+                "get_blueprint_graph",
+                "compile_blueprint",
+                "query_log",
+                "execute_console_command",
                 "view_image",
             ],
         );
@@ -1475,6 +1528,14 @@ mod tests {
                 "read_mcp_resource",
                 "update_plan",
                 "get_project_directory",
+                "get_project_context",
+                "list_directory",
+                "list_assets",
+                "open_asset_in_editor",
+                "get_blueprint_graph",
+                "compile_blueprint",
+                "query_log",
+                "execute_console_command",
                 "apply_patch",
                 "view_image",
             ],
@@ -1494,6 +1555,14 @@ mod tests {
                 "read_mcp_resource",
                 "update_plan",
                 "get_project_directory",
+                "get_project_context",
+                "list_directory",
+                "list_assets",
+                "open_asset_in_editor",
+                "get_blueprint_graph",
+                "compile_blueprint",
+                "query_log",
+                "execute_console_command",
                 "apply_patch",
                 "view_image",
             ],
@@ -1515,6 +1584,14 @@ mod tests {
                 "read_mcp_resource",
                 "update_plan",
                 "get_project_directory",
+                "get_project_context",
+                "list_directory",
+                "list_assets",
+                "open_asset_in_editor",
+                "get_blueprint_graph",
+                "compile_blueprint",
+                "query_log",
+                "execute_console_command",
                 "web_search",
                 "view_image",
             ],

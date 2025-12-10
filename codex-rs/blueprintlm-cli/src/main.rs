@@ -41,8 +41,12 @@ use futures_util::StreamExt;
 use serde::Serialize;
 use std::env;
 use std::fs;
+use std::fs::File;
+use std::fs::OpenOptions;
 use std::io;
+use std::io::BufWriter;
 use std::io::Read;
+use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -50,6 +54,9 @@ use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 use time::OffsetDateTime;
 use time::macros::format_description;
+use tracing::info;
+use tracing::subscriber::DefaultGuard;
+use tracing::warn;
 
 /// Codex CLI
 #[derive(Debug, Parser)]
@@ -566,6 +573,14 @@ async fn run_ask(
         emit_error("Session id mismatch between provided id and rollout history".to_string())?;
         return Ok(());
     }
+    let mut ask_log = create_ask_log_file(&config.codex_home, &conversation_id);
+    let _tracing_guard = ask_log.as_ref().and_then(init_tracing);
+    log_line(&mut ask_log, "ask started");
+    info!(
+        session_id = %conversation_id,
+        rollout_path = %rollout_path.display(),
+        "resuming session from rollout"
+    );
     let rollout_recorder =
         match RolloutRecorder::new(&config, RolloutRecorderParams::resume(rollout_path.clone()))
             .await
@@ -614,6 +629,13 @@ async fn run_ask(
             }
         },
     };
+    log_line(
+        &mut ask_log,
+        format!(
+            "parsed payload into {} ResponseInputItem entries",
+            response_inputs.len()
+        ),
+    );
     let mut new_items: Vec<ResponseItem> = Vec::new();
     let mut prompt = Prompt::default();
     prompt.input.append(&mut history_items);
@@ -622,6 +644,10 @@ async fn run_ask(
         prompt.input.push(response_item.clone());
         new_items.push(response_item);
     }
+    log_line(
+        &mut ask_log,
+        format!("seeded prompt with {} history items", prompt.input.len()),
+    );
     if let Some(recorder) = rollout_recorder.as_ref() {
         let to_record: Vec<RolloutItem> = new_items
             .iter()
@@ -630,6 +656,8 @@ async fn run_ask(
             .collect();
         if let Err(err) = recorder.append_items(&to_record).await {
             eprintln!("Failed to record request items: {err}");
+        } else if let Err(err) = recorder.flush().await {
+            eprintln!("Failed to flush rollout after request items: {err}");
         }
     }
 
@@ -749,16 +777,35 @@ async fn run_ask(
             },
             Err(err) => {
                 stream_error = Some(err.to_string());
+                warn!(
+                    session_id = %conversation_id,
+                    error = %err,
+                    "stream returned error"
+                );
+                log_line(&mut ask_log, format!("stream error: {err}"));
                 break;
             }
         }
     }
 
+    log_line(
+        &mut ask_log,
+        format!(
+            "stream finished with {} response items",
+            collected_items.len()
+        ),
+    );
     let response = AskResponse {
         success: stream_error.is_none(),
         error: stream_error,
         response: collected_items,
     };
+    info!(
+        session_id = %conversation_id,
+        response_items = response.response.len(),
+        success = response.success,
+        "ask completed"
+    );
     if let Some(recorder) = rollout_recorder.as_ref() {
         let to_record: Vec<RolloutItem> = response
             .response
@@ -768,8 +815,11 @@ async fn run_ask(
             .collect();
         if let Err(err) = recorder.append_items(&to_record).await {
             eprintln!("Failed to record response items: {err}");
+        } else if let Err(err) = recorder.flush().await {
+            eprintln!("Failed to flush rollout after response items: {err}");
         }
     }
+    log_line(&mut ask_log, "writing AskResponse JSON to stdout");
     let json = serde_json::to_string_pretty(&response)?;
     println!("{json}");
 
@@ -943,6 +993,96 @@ async fn run_list_models(root_config_overrides: CliConfigOverrides) -> anyhow::R
     let json = serde_json::to_string_pretty(&presets)?;
     println!("{json}");
     Ok(())
+}
+
+struct AskLog {
+    writer: BufWriter<File>,
+    path: PathBuf,
+}
+
+fn create_ask_log_file(base_dir: &Path, conversation_id: &ConversationId) -> Option<AskLog> {
+    let now = OffsetDateTime::now_utc();
+    let log_dir = base_dir
+        .join("log")
+        .join(now.year().to_string())
+        .join(format!("{:02}", u8::from(now.month())))
+        .join(format!("{:02}", now.day()));
+    if let Err(err) = fs::create_dir_all(&log_dir) {
+        eprintln!(
+            "Failed to create log directory {}: {}",
+            log_dir.display(),
+            err
+        );
+        return None;
+    }
+
+    let timestamp = now
+        .format(&format_description!(
+            "[hour]-[minute]-[second].[subsecond digits:3]Z"
+        ))
+        .unwrap_or_else(|_| "unknown".to_string());
+    let filename = format!("ask-{conversation_id}-{timestamp}.log");
+    let path = log_dir.join(filename);
+    match OpenOptions::new().create(true).append(true).open(&path) {
+        Ok(file) => {
+            let message = format!("log started for {conversation_id}");
+            log_line_raw(&path, file, &message).map(|writer| AskLog { writer, path })
+        }
+        Err(err) => {
+            eprintln!("Failed to open log file {}: {}", path.display(), err);
+            warn!(path = %path.display(), "failed to create ask log file");
+            None
+        }
+    }
+}
+
+fn log_line(log: &mut Option<AskLog>, message: impl AsRef<str>) {
+    if let Some(log) = log {
+        if let Err(err) = writeln!(log.writer, "[{}] {}", log_timestamp(), message.as_ref()) {
+            eprintln!("Failed to write ask log line: {err}");
+        }
+        let _ = log.writer.flush();
+    }
+}
+
+fn log_line_raw(path: &Path, file: File, message: &str) -> Option<BufWriter<File>> {
+    let mut writer = BufWriter::new(file);
+    if writeln!(writer, "[{}] {message}", log_timestamp()).is_err() {
+        eprintln!("Failed to write initial ask log line to {}", path.display());
+        return None;
+    }
+    Some(writer)
+}
+
+fn log_timestamp() -> String {
+    OffsetDateTime::now_utc()
+        .format(&format_description!(
+            "[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]Z"
+        ))
+        .unwrap_or_else(|_| "unknown".to_string())
+}
+
+#[allow(clippy::expect_used)]
+fn init_tracing(log: &AskLog) -> Option<DefaultGuard> {
+    let file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log.path)
+        .ok()?;
+
+    // Clone the file handle for the subscriber; our manual log writes use a separate handle.
+    let writer = move || {
+        file.try_clone()
+            .map(BufWriter::new)
+            .expect("failed to clone log file handle")
+    };
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_writer(writer)
+        .with_target(false)
+        .finish();
+
+    Some(tracing::subscriber::set_default(subscriber))
 }
 
 #[cfg(test)]
