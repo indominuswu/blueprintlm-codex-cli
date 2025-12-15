@@ -138,6 +138,14 @@ struct AskCommand {
         help = "Trigger a synthetic stream error for testing (internal)"
     )]
     debug_stream_error: Option<String>,
+
+    /// Path to a JSON file containing function tool definitions to expose to the model.
+    #[arg(
+        long = "tools-json",
+        value_name = "TOOLS_JSON",
+        value_hint = clap::ValueHint::FilePath
+    )]
+    tools_json: std::path::PathBuf,
 }
 
 #[derive(Debug, Parser)]
@@ -258,6 +266,7 @@ async fn cli_main(_codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<(
             add_dir,
             cwd,
             debug_stream_error,
+            tools_json,
         }) => {
             let payload = payload.or(payload_arg).ok_or_else(|| {
                 anyhow::anyhow!("payload is required either via --payload or positional argument")
@@ -269,6 +278,7 @@ async fn cli_main(_codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<(
                 add_dir,
                 cwd,
                 debug_stream_error,
+                tools_json,
                 root_config_overrides,
             )
             .await?;
@@ -508,6 +518,7 @@ async fn run_ask(
     add_dir: Vec<PathBuf>,
     cwd: Option<PathBuf>,
     debug_stream_error: Option<String>,
+    tools_json: PathBuf,
     root_config_overrides: CliConfigOverrides,
 ) -> anyhow::Result<()> {
     let cli_overrides = root_config_overrides
@@ -665,7 +676,14 @@ async fn run_ask(
         model_family: &model_family,
         features: &config.features,
     });
-    prompt.set_tools(blueprintlm_default_tool_specs(&tools_config));
+    let tools = match blueprintlm_default_tool_specs(&tools_config, &tools_json) {
+        Ok(tools) => tools,
+        Err(err) => {
+            emit_error(format!("Failed to load tools JSON: {err}"))?;
+            return Ok(());
+        }
+    };
+    prompt.set_tools(tools);
     prompt.set_parallel_tool_calls(
         model_family.supports_parallel_tool_calls
             && config.features.enabled(Feature::ParallelToolCalls),
@@ -1105,6 +1123,8 @@ mod tests {
             "/tmp",
             "--add-dir",
             "/tmp/foo",
+            "--tools-json",
+            "/tmp/tools.json",
             r#"{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}"#,
         ])
         .expect("parse");
@@ -1116,6 +1136,7 @@ mod tests {
             cwd,
             debug_save_prompts,
             debug_stream_error,
+            tools_json,
         }) = cli.subcommand
         else {
             unreachable!()
@@ -1133,6 +1154,7 @@ mod tests {
         assert_eq!(cwd.as_deref(), Some(std::path::Path::new("/tmp")));
         assert!(!debug_save_prompts);
         assert!(debug_stream_error.is_none());
+        assert_eq!(tools_json, std::path::PathBuf::from("/tmp/tools.json"));
     }
 
     #[test]
@@ -1144,6 +1166,8 @@ mod tests {
             r#"{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}"#,
             "--session-id",
             "abc",
+            "--tools-json",
+            "/tmp/tools.json",
         ])
         .expect("parse");
         let Subcommand::Ask(AskCommand {
@@ -1154,6 +1178,7 @@ mod tests {
             cwd,
             debug_save_prompts,
             debug_stream_error,
+            tools_json,
         }) = cli.subcommand
         else {
             unreachable!()
@@ -1171,6 +1196,7 @@ mod tests {
         assert!(cwd.is_none());
         assert!(!debug_save_prompts);
         assert!(debug_stream_error.is_none());
+        assert_eq!(tools_json, std::path::PathBuf::from("/tmp/tools.json"));
     }
 
     #[test]
