@@ -18,7 +18,7 @@ use codex_core::ResponseEvent;
 use codex_core::RolloutRecorder;
 use codex_core::ToolsConfig;
 use codex_core::ToolsConfigParams;
-use codex_core::blueprintlm_default_tool_specs;
+use codex_core::blueprintlm_default_tool_specs_from_str;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
 use codex_core::features::Feature;
@@ -38,6 +38,7 @@ use codex_protocol::protocol::RolloutLine;
 use codex_protocol::protocol::SessionConfiguredEvent;
 use codex_protocol::protocol::SessionSource;
 use futures_util::StreamExt;
+use serde::Deserialize;
 use serde::Serialize;
 use std::env;
 use std::fs;
@@ -106,13 +107,9 @@ enum Subcommand {
 
 #[derive(Debug, Parser)]
 struct AskCommand {
-    /// JSON payload representing one or more ResponseInputItem entries.
-    #[arg(long = "payload", value_name = "PAYLOAD_JSON")]
-    payload: Option<String>,
-
-    /// JSON payload representing one or more ResponseInputItem entries (positional).
-    #[arg(value_name = "PAYLOAD_JSON", required_unless_present = "payload")]
-    payload_arg: Option<String>,
+    /// JSON object containing a payload and tool definitions (use '-' to read from stdin).
+    #[arg(value_name = "ASK_INPUT_JSON")]
+    input: String,
 
     /// Resume an existing session by id instead of starting a new one.
     #[arg(long = "session-id", value_name = "SESSION_ID")]
@@ -138,14 +135,6 @@ struct AskCommand {
         help = "Trigger a synthetic stream error for testing (internal)"
     )]
     debug_stream_error: Option<String>,
-
-    /// Path to a JSON file containing function tool definitions to expose to the model.
-    #[arg(
-        long = "tools-json",
-        value_name = "TOOLS_JSON",
-        value_hint = clap::ValueHint::FilePath
-    )]
-    tools_json: std::path::PathBuf,
 }
 
 #[derive(Debug, Parser)]
@@ -259,26 +248,21 @@ async fn cli_main(_codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<(
 
     match subcommand {
         Subcommand::Ask(AskCommand {
-            payload,
-            payload_arg,
+            input,
             session_id,
             debug_save_prompts,
             add_dir,
             cwd,
             debug_stream_error,
-            tools_json,
         }) => {
-            let payload = payload.or(payload_arg).ok_or_else(|| {
-                anyhow::anyhow!("payload is required either via --payload or positional argument")
-            })?;
+            let resolved_ask_input = resolve_ask_input(input, &mut std::io::stdin().lock())?;
             run_ask(
-                payload,
+                resolved_ask_input,
                 session_id,
                 debug_save_prompts,
                 add_dir,
                 cwd,
                 debug_stream_error,
-                tools_json,
                 root_config_overrides,
             )
             .await?;
@@ -511,16 +495,54 @@ fn read_full_rollout(path: &Path) -> io::Result<(Vec<RolloutLine>, ConversationI
     Ok((history, conversation_id))
 }
 
+#[derive(Debug, Deserialize)]
+struct AskInput {
+    payload: serde_json::Value,
+    tools: serde_json::Value,
+}
+
+struct ResolvedAskInput {
+    ask_input: AskInput,
+    stdin_raw: Option<String>,
+}
+
+fn parse_ask_input(raw: &str) -> anyhow::Result<AskInput> {
+    serde_json::from_str(raw)
+        .context("invalid ask input JSON; expected object with \"payload\" and \"tools\"")
+}
+
+fn resolve_ask_input(input: String, mut reader: impl Read) -> anyhow::Result<ResolvedAskInput> {
+    if input != "-" {
+        return Ok(ResolvedAskInput {
+            ask_input: parse_ask_input(&input)?,
+            stdin_raw: None,
+        });
+    }
+
+    let mut buf = String::new();
+    reader.read_to_string(&mut buf)?;
+    if buf.trim().is_empty() {
+        anyhow::bail!("stdin ask input must not be empty");
+    }
+    Ok(ResolvedAskInput {
+        ask_input: parse_ask_input(&buf)?,
+        stdin_raw: Some(buf),
+    })
+}
+
 async fn run_ask(
-    payload: String,
+    resolved_ask_input: ResolvedAskInput,
     session_id: String,
     debug_save_prompts: bool,
     add_dir: Vec<PathBuf>,
     cwd: Option<PathBuf>,
     debug_stream_error: Option<String>,
-    tools_json: PathBuf,
     root_config_overrides: CliConfigOverrides,
 ) -> anyhow::Result<()> {
+    let ResolvedAskInput {
+        ask_input,
+        stdin_raw,
+    } = resolved_ask_input;
     let cli_overrides = root_config_overrides
         .parse_overrides()
         .map_err(anyhow::Error::msg)?;
@@ -587,6 +609,9 @@ async fn run_ask(
     let mut ask_log = create_ask_log_file(&config.codex_home, &conversation_id);
     let _tracing_guard = ask_log.as_ref().and_then(init_tracing);
     log_line(&mut ask_log, "ask started");
+    if let Some(stdin_raw) = stdin_raw {
+        log_line(&mut ask_log, format!("stdin ask input: {stdin_raw}"));
+    }
     info!(
         session_id = %conversation_id,
         rollout_path = %rollout_path.display(),
@@ -626,11 +651,15 @@ async fn run_ask(
         SessionSource::Cli,
     );
 
+    let payload_json =
+        serde_json::to_string(&ask_input.payload).context("failed to serialize ask payload")?;
+    let tools_json =
+        serde_json::to_string(&ask_input.tools).context("failed to serialize ask tools")?;
     let response_inputs: Vec<ResponseInputItem> = match serde_json::from_str::<Vec<ResponseInputItem>>(
-        &payload,
+        &payload_json,
     ) {
         Ok(items) => items,
-        Err(err_vec) => match serde_json::from_str::<ResponseInputItem>(&payload) {
+        Err(err_vec) => match serde_json::from_str::<ResponseInputItem>(&payload_json) {
             Ok(item) => vec![item],
             Err(err_single) => {
                 emit_error(format!(
@@ -676,10 +705,10 @@ async fn run_ask(
         model_family: &model_family,
         features: &config.features,
     });
-    let tools = match blueprintlm_default_tool_specs(&tools_config, &tools_json) {
+    let tools = match blueprintlm_default_tool_specs_from_str(&tools_config, &tools_json) {
         Ok(tools) => tools,
         Err(err) => {
-            emit_error(format!("Failed to load tools JSON: {err}"))?;
+            emit_error(format!("Failed to load tools from ask input: {err}"))?;
             return Ok(());
         }
     };
@@ -1109,11 +1138,13 @@ mod tests {
     use codex_protocol::protocol::SessionMeta;
     use codex_protocol::protocol::SessionMetaLine;
     use pretty_assertions::assert_eq;
+    use std::io::Cursor;
     use std::io::Write;
     use tempfile::NamedTempFile;
 
     #[test]
-    fn ask_subcommand_parses_prompt() {
+    fn ask_subcommand_parses_bundle_arg() {
+        let bundle = r#"{"payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]},"tools":{"tools":[{"type":"function","name":"get_project_directory","description":"Declares the UE5 project directory resolver. Codex only surfaces the tool; the UE plugin executes it.","parameters":{"type":"object","properties":{"project_dir":{"type":"string"}},"additionalProperties":false},"strict":false}]}}"#;
         let cli = MultitoolCli::try_parse_from([
             "blueprintlm-cli",
             "ask",
@@ -1123,80 +1154,26 @@ mod tests {
             "/tmp",
             "--add-dir",
             "/tmp/foo",
-            "--tools-json",
-            "/tmp/tools.json",
-            r#"{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}"#,
+            bundle,
         ])
         .expect("parse");
         let Subcommand::Ask(AskCommand {
-            payload,
-            payload_arg,
+            input,
             session_id,
             add_dir,
             cwd,
             debug_save_prompts,
             debug_stream_error,
-            tools_json,
         }) = cli.subcommand
         else {
             unreachable!()
         };
-        assert!(payload.is_none());
-        assert_eq!(
-            payload_arg,
-            Some(
-                r#"{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}"#
-                    .to_string()
-            )
-        );
+        assert_eq!(input, bundle);
         assert_eq!(session_id.as_str(), "abc");
         assert_eq!(add_dir, vec![std::path::PathBuf::from("/tmp/foo")]);
         assert_eq!(cwd.as_deref(), Some(std::path::Path::new("/tmp")));
         assert!(!debug_save_prompts);
         assert!(debug_stream_error.is_none());
-        assert_eq!(tools_json, std::path::PathBuf::from("/tmp/tools.json"));
-    }
-
-    #[test]
-    fn ask_subcommand_parses_payload_flag() {
-        let cli = MultitoolCli::try_parse_from([
-            "blueprintlm-cli",
-            "ask",
-            "--payload",
-            r#"{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}"#,
-            "--session-id",
-            "abc",
-            "--tools-json",
-            "/tmp/tools.json",
-        ])
-        .expect("parse");
-        let Subcommand::Ask(AskCommand {
-            payload,
-            payload_arg,
-            session_id,
-            add_dir,
-            cwd,
-            debug_save_prompts,
-            debug_stream_error,
-            tools_json,
-        }) = cli.subcommand
-        else {
-            unreachable!()
-        };
-        assert_eq!(
-            payload,
-            Some(
-                r#"{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}"#
-                    .to_string()
-            )
-        );
-        assert!(payload_arg.is_none());
-        assert_eq!(session_id.as_str(), "abc");
-        assert!(add_dir.is_empty());
-        assert!(cwd.is_none());
-        assert!(!debug_save_prompts);
-        assert!(debug_stream_error.is_none());
-        assert_eq!(tools_json, std::path::PathBuf::from("/tmp/tools.json"));
     }
 
     #[test]
@@ -1237,6 +1214,72 @@ mod tests {
         assert_eq!(project_id, "proj123");
         assert_eq!(project_doc, "agents text");
         assert_eq!(debug_start_session_error.as_deref(), Some("io"));
+    }
+
+    #[test]
+    fn resolve_ask_input_reads_from_stdin() {
+        let mut stdin = Cursor::new(
+            r#"{"payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"from stdin"}]},"tools":[{"type":"function","name":"get_project_directory","description":"Declares the UE5 project directory resolver. Codex only surfaces the tool; the UE plugin executes it.","parameters":{"type":"object","properties":{"project_dir":{"type":"string"}},"additionalProperties":false},"strict":false}]}"#,
+        );
+        let ResolvedAskInput {
+            ask_input,
+            stdin_raw,
+        } = resolve_ask_input("-".to_string(), &mut stdin).expect("ask input");
+        assert_eq!(
+            stdin_raw.as_deref(),
+            Some(
+                r#"{"payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"from stdin"}]},"tools":[{"type":"function","name":"get_project_directory","description":"Declares the UE5 project directory resolver. Codex only surfaces the tool; the UE plugin executes it.","parameters":{"type":"object","properties":{"project_dir":{"type":"string"}},"additionalProperties":false},"strict":false}]}"#
+            )
+        );
+        assert_eq!(
+            ask_input.payload,
+            serde_json::json!({
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "from stdin"}]
+            })
+        );
+        assert_eq!(
+            ask_input.tools,
+            serde_json::json!([{
+                "type": "function",
+                "name": "get_project_directory",
+                "description": "Declares the UE5 project directory resolver. Codex only surfaces the tool; the UE plugin executes it.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"project_dir": {"type": "string"}},
+                    "additionalProperties": false
+                },
+                "strict": false
+            }])
+        );
+    }
+
+    #[test]
+    fn resolve_ask_input_passthrough_inline() {
+        let bundle = r#"{"payload":{"foo":"bar"},"tools":{"tools":[{"type":"function","name":"get_project_directory","description":"Declares the UE5 project directory resolver. Codex only surfaces the tool; the UE plugin executes it.","parameters":{"type":"object","properties":{"project_dir":{"type":"string"}},"additionalProperties":false},"strict":false}]}}"#;
+        let ResolvedAskInput {
+            ask_input,
+            stdin_raw,
+        } = resolve_ask_input(bundle.to_string(), &mut Cursor::new(Vec::new())).expect("ask input");
+        assert!(stdin_raw.is_none());
+        assert_eq!(ask_input.payload, serde_json::json!({ "foo": "bar" }));
+        assert_eq!(
+            ask_input.tools,
+            serde_json::json!({
+                "tools": [{
+                    "type": "function",
+                    "name": "get_project_directory",
+                    "description": "Declares the UE5 project directory resolver. Codex only surfaces the tool; the UE plugin executes it.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"project_dir": {"type": "string"}},
+                        "additionalProperties": false
+                    },
+                    "strict": false
+                }]
+            })
+        );
     }
 
     #[test]

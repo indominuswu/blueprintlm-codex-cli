@@ -1011,11 +1011,8 @@ enum ExternalTool {
     Unsupported,
 }
 
-fn load_function_tools_from_path(path: &Path) -> anyhow::Result<Vec<ToolSpec>> {
-    let contents = fs::read_to_string(path)
-        .with_context(|| format!("failed to read tools file at {}", path.display()))?;
-    let parsed: ExternalToolsInput = serde_json::from_str(&contents)
-        .with_context(|| format!("failed to parse tools file JSON at {}", path.display()))?;
+fn load_function_tools_from_str(contents: &str) -> anyhow::Result<Vec<ToolSpec>> {
+    let parsed: ExternalToolsInput = serde_json::from_str(contents)?;
     let mut tool_specs = Vec::new();
     for tool in parsed.into_vec() {
         match tool {
@@ -1033,17 +1030,21 @@ fn load_function_tools_from_path(path: &Path) -> anyhow::Result<Vec<ToolSpec>> {
                 }));
             }
             ExternalTool::Unsupported => {
-                return Err(anyhow!(
-                    "only function tools are supported in {}",
-                    path.display()
-                ));
+                return Err(anyhow!("only function tools are supported"));
             }
         }
     }
     if tool_specs.is_empty() {
-        return Err(anyhow!("no function tools found in {}", path.display()));
+        return Err(anyhow!("no function tools found"));
     }
     Ok(tool_specs)
+}
+
+fn load_function_tools_from_path(path: &Path) -> anyhow::Result<Vec<ToolSpec>> {
+    let contents = fs::read_to_string(path)
+        .with_context(|| format!("failed to read tools file at {}", path.display()))?;
+    load_function_tools_from_str(&contents)
+        .with_context(|| format!("failed to parse tools file JSON at {}", path.display()))
 }
 
 /// Builds the tool registry builder while collecting tool specs for later serialization.
@@ -1217,6 +1218,20 @@ pub fn blueprintlm_default_tool_specs(
     })
 }
 
+pub fn blueprintlm_default_tool_specs_from_str(
+    config: &ToolsConfig,
+    tools_json: &str,
+) -> anyhow::Result<Vec<ToolSpec>> {
+    blueprintlm_build_specs_from_str(config, tools_json, None).map(|builder| {
+        builder
+            .build()
+            .0
+            .into_iter()
+            .map(|configured| configured.spec)
+            .collect()
+    })
+}
+
 pub fn blueprintlm_build_specs(
     _config: &ToolsConfig,
     tools_path: &std::path::Path,
@@ -1224,6 +1239,19 @@ pub fn blueprintlm_build_specs(
 ) -> anyhow::Result<ToolRegistryBuilder> {
     let mut builder = ToolRegistryBuilder::new();
     let external_tools = load_function_tools_from_path(tools_path)?;
+    for tool in external_tools {
+        builder.push_spec(tool);
+    }
+    Ok(builder)
+}
+
+pub fn blueprintlm_build_specs_from_str(
+    _config: &ToolsConfig,
+    tools_json: &str,
+    _mcp_tools: Option<HashMap<String, mcp_types::Tool>>,
+) -> anyhow::Result<ToolRegistryBuilder> {
+    let mut builder = ToolRegistryBuilder::new();
+    let external_tools = load_function_tools_from_str(tools_json)?;
     for tool in external_tools {
         builder.push_spec(tool);
     }
@@ -1345,6 +1373,24 @@ mod tests {
 
         let tools =
             blueprintlm_default_tool_specs(&config, tmp.path()).expect("load blueprintlm tools");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tool_name(&tools[0]), "get_project_directory");
+    }
+
+    #[test]
+    fn blueprintlm_tools_load_from_json_str() {
+        let features = Features::with_defaults();
+        let model_family = find_family_for_model("gpt-4.1");
+        let config = ToolsConfig::new(&ToolsConfigParams {
+            model_family: &model_family,
+            features: &features,
+        });
+
+        let tools = blueprintlm_default_tool_specs_from_str(
+            &config,
+            r#"{"tools":[{"type":"function","name":"get_project_directory","description":"Declares the UE5 project directory resolver. Codex only surfaces the tool; the UE plugin executes it.","parameters":{"type":"object","properties":{"project_dir":{"type":"string"}},"additionalProperties":false},"strict":false}]}"#,
+        )
+        .expect("load blueprintlm tools");
         assert_eq!(tools.len(), 1);
         assert_eq!(tool_name(&tools[0]), "get_project_directory");
     }
