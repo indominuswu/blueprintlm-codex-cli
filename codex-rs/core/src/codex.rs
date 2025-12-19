@@ -161,6 +161,11 @@ use codex_protocol::protocol::InitialHistory;
 use codex_protocol::user_input::UserInput;
 use codex_utils_readiness::Readiness;
 use codex_utils_readiness::ReadinessFlag;
+use serde_json::json;
+use std::env;
+use std::fs;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 
 /// The high-level interface to the Codex system.
 /// It operates as a queue pair where you send submissions and receive events.
@@ -693,6 +698,7 @@ impl Session {
                 session_id: conversation_id,
                 model: session_configuration.model.clone(),
                 model_provider_id: config.model_provider_id.clone(),
+                project_id: config.project_id.clone(),
                 approval_policy: session_configuration.approval_policy.value(),
                 sandbox_policy: session_configuration.sandbox_policy.clone(),
                 cwd: session_configuration.cwd.clone(),
@@ -2416,6 +2422,17 @@ async fn run_turn(
         output_schema: turn_context.final_output_json_schema.clone(),
     };
 
+    let model = turn_context.client.get_model_family();
+    tracing::info!(
+        target: "prompt_debug",
+        input = ?prompt.get_formatted_input(),
+        base = %prompt.get_full_instructions(&model),
+        tools = ?prompt.tools,
+        parallel = prompt.parallel_tool_calls,
+        "prompt about to be sent"
+    );
+    write_prompt_debug(&prompt, turn_context.as_ref(), &sess);
+
     let mut retries = 0;
     loop {
         match try_run_turn(
@@ -2718,6 +2735,43 @@ async fn try_run_turn(
     }
 
     outcome
+}
+
+fn write_prompt_debug(prompt: &Prompt, turn_context: &TurnContext, sess: &Session) {
+    let Some(base_dir) = env::var_os("CODEX_SAVE_PROMPTS_DIR").map(PathBuf::from) else {
+        return;
+    };
+    if let Err(err) = fs::create_dir_all(&base_dir) {
+        warn!(?err, "failed to create prompt debug directory");
+        return;
+    }
+
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    let seconds = i128::try_from(timestamp.as_secs()).unwrap_or(0);
+    let millis = i128::from(timestamp.subsec_millis());
+    let path = base_dir.join(format!(
+        "prompt-{}-{seconds}-{millis:03}.json",
+        sess.conversation_id
+    ));
+
+    let model_family = turn_context.client.get_model_family();
+    let payload = json!({
+        "input": prompt.get_formatted_input(),
+        "instructions": prompt.get_full_instructions(&model_family),
+        "tools": prompt.tools,
+        "parallel_tool_calls": prompt.parallel_tool_calls,
+    });
+
+    match serde_json::to_string_pretty(&payload) {
+        Ok(serialized) => {
+            if let Err(err) = fs::write(&path, serialized) {
+                warn!(?err, "failed to write prompt debug file");
+            }
+        }
+        Err(err) => warn!(?err, "failed to serialize prompt debug payload"),
+    }
 }
 
 pub(super) fn get_last_assistant_message_from_turn(responses: &[ResponseItem]) -> Option<String> {

@@ -10,7 +10,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use uuid::Uuid;
 
-/// Create a minimal rollout file under `CODEX_HOME/sessions/YYYY/MM/DD/`.
+/// Create a minimal rollout file under `BLUEPRINTLM_HOME/sessions/YYYY/MM/DD/`.
 ///
 /// - `filename_ts` is the filename timestamp component in `YYYY-MM-DDThh-mm-ss` format.
 /// - `meta_rfc3339` is the envelope timestamp used in JSON lines.
@@ -49,6 +49,7 @@ pub fn create_fake_rollout(
         instructions: None,
         source: SessionSource::Cli,
         model_provider: model_provider.map(str::to_string),
+        project_id: None,
     };
     let payload = serde_json::to_value(SessionMetaLine {
         meta,

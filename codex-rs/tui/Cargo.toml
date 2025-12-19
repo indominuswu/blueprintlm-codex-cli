@@ -88,7 +88,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 tree-sitter-bash = { workspace = true }
 tree-sitter-highlight = { workspace = true }
 unicode-segmentation = { workspace = true }
-unicode-width = { workspace = true }
+unicode-width = "0.2.1"
 url = { workspace = true }
 
 codex-windows-sandbox = { workspace = true }

@@ -163,9 +163,8 @@ mod tests {
     #[test]
     fn test_get_codex_user_agent() {
         let user_agent = get_codex_user_agent();
-        let originator = originator().value.as_str();
-        let prefix = format!("{originator}/");
-        assert!(user_agent.starts_with(&prefix));
+        let expected_prefix = format!("{}/", originator().value);
+        assert!(user_agent.starts_with(&expected_prefix));
     }
 
     #[tokio::test]

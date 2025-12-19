@@ -163,6 +163,12 @@ pub struct ToolRegistryBuilder {
     specs: Vec<ConfiguredToolSpec>,
 }
 
+impl Default for ToolRegistryBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ToolRegistryBuilder {
     pub fn new() -> Self {
         Self {

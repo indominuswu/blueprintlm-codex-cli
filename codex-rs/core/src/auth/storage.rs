@@ -25,15 +25,15 @@ use codex_keyring_store::KeyringStore;
 #[serde(rename_all = "lowercase")]
 pub enum AuthCredentialsStoreMode {
     #[default]
-    /// Persist credentials in CODEX_HOME/auth.json.
+    /// Persist credentials in BLUEPRINTLM_HOME/auth.json.
     File,
     /// Persist credentials in the keyring. Fail if unavailable.
     Keyring,
-    /// Use keyring when available; otherwise, fall back to a file in CODEX_HOME.
+    /// Use keyring when available; otherwise, fall back to a file in BLUEPRINTLM_HOME.
     Auto,
 }
 
-/// Expected structure for $CODEX_HOME/auth.json.
+/// Expected structure for $BLUEPRINTLM_HOME/auth.json.
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 pub struct AuthDotJson {
     #[serde(rename = "OPENAI_API_KEY")]
@@ -75,7 +75,7 @@ impl FileAuthStorage {
         Self { codex_home }
     }
 
-    /// Attempt to read and refresh the `auth.json` file in the given `CODEX_HOME` directory.
+    /// Attempt to read and refresh the `auth.json` file in the given `BLUEPRINTLM_HOME` directory.
     /// Returns the full AuthDotJson structure after refreshing if necessary.
     pub(super) fn try_read_auth_json(&self, auth_file: &Path) -> std::io::Result<AuthDotJson> {
         let mut file = File::open(auth_file)?;

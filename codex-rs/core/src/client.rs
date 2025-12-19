@@ -1,3 +1,4 @@
+use std::env;
 use std::sync::Arc;
 
 use crate::api_bridge::auth_provider_from_auth;
@@ -45,6 +46,8 @@ use crate::config::Config;
 use crate::default_client::build_reqwest_client;
 use crate::error::CodexErr;
 use crate::error::Result;
+use crate::error::RetryLimitReachedError;
+use crate::error::UnexpectedResponseError;
 use crate::features::FEATURES;
 use crate::flags::CODEX_RS_SSE_FIXTURE;
 use crate::model_provider_info::ModelProviderInfo;
@@ -52,6 +55,8 @@ use crate::model_provider_info::WireApi;
 use crate::openai_models::model_family::ModelFamily;
 use crate::tools::spec::create_tools_json_for_chat_completions_api;
 use crate::tools::spec::create_tools_json_for_responses_api;
+
+const DEBUG_STREAM_ERROR_ENV: &str = "BLUEPRINTLM_DEBUG_STREAM_ERROR";
 
 #[derive(Debug, Clone)]
 pub struct ModelClient {
@@ -114,6 +119,10 @@ impl ModelClient {
     /// For Chat providers, the underlying stream is optionally aggregated
     /// based on the `show_raw_agent_reasoning` flag in the config.
     pub async fn stream(&self, prompt: &Prompt) -> Result<ResponseStream> {
+        if let Some(kind) = Self::debug_stream_error_kind() {
+            return Ok(Self::make_debug_error_stream(kind));
+        }
+
         match self.provider.wire_api {
             WireApi::Responses => self.stream_responses_api(prompt).await,
             WireApi::Chat => {
@@ -132,6 +141,38 @@ impl ModelClient {
                 }
             }
         }
+    }
+
+    fn debug_stream_error_kind() -> Option<String> {
+        env::var(DEBUG_STREAM_ERROR_ENV)
+            .ok()
+            .filter(|kind| !kind.is_empty())
+    }
+
+    fn make_debug_error_stream(kind: String) -> ResponseStream {
+        let (tx, rx_event) = mpsc::channel(1);
+        let err = match kind.as_str() {
+            "context_window" => CodexErr::ContextWindowExceeded,
+            "quota_exceeded" => CodexErr::QuotaExceeded,
+            "usage_not_included" => CodexErr::UsageNotIncluded,
+            "stream_retry" => CodexErr::Stream(
+                "debug stream retry".to_string(),
+                Some(Duration::from_millis(100)),
+            ),
+            "unexpected_status" => CodexErr::UnexpectedStatus(UnexpectedResponseError {
+                status: StatusCode::BAD_REQUEST,
+                body: "debug unexpected status".to_string(),
+                request_id: Some("debug-request-id".to_string()),
+            }),
+            "retry_limit" => CodexErr::RetryLimit(RetryLimitReachedError {
+                status: StatusCode::TOO_MANY_REQUESTS,
+                request_id: Some("debug-request-id".to_string()),
+            }),
+            "fatal" => CodexErr::Fatal("debug fatal error".to_string()),
+            _ => CodexErr::Fatal(format!("unknown {DEBUG_STREAM_ERROR_ENV} '{kind}'")),
+        };
+        let _ = tx.try_send(Err(err));
+        ResponseStream { rx_event }
     }
 
     /// Streams a turn via the OpenAI Chat Completions API.

@@ -7,6 +7,8 @@ use crate::tools::handlers::PLAN_TOOL;
 use crate::tools::handlers::apply_patch::create_apply_patch_freeform_tool;
 use crate::tools::handlers::apply_patch::create_apply_patch_json_tool;
 use crate::tools::registry::ToolRegistryBuilder;
+use anyhow::Context;
+use anyhow::anyhow;
 use codex_protocol::openai_models::ApplyPatchToolType;
 use codex_protocol::openai_models::ConfigShellToolType;
 use serde::Deserialize;
@@ -15,9 +17,33 @@ use serde_json::Value as JsonValue;
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::fs;
+use std::path::Path;
+
+mod ue5;
+
+#[cfg(test)]
+use self::ue5::create_compile_blueprint_tool;
+#[cfg(test)]
+use self::ue5::create_execute_console_command_tool;
+#[cfg(test)]
+use self::ue5::create_get_blueprint_graph_tool;
+#[cfg(test)]
+use self::ue5::create_get_project_context_tool;
+#[cfg(test)]
+use self::ue5::create_get_project_directory_tool;
+#[cfg(test)]
+use self::ue5::create_list_assets_tool;
+#[cfg(test)]
+use self::ue5::create_list_directory_tool;
+#[cfg(test)]
+use self::ue5::create_open_asset_in_editor_tool;
+#[cfg(test)]
+use self::ue5::create_query_log_tool;
+use self::ue5::register_ue5_tools;
 
 #[derive(Debug, Clone)]
-pub(crate) struct ToolsConfig {
+pub struct ToolsConfig {
     pub shell_type: ConfigShellToolType,
     pub apply_patch_tool_type: Option<ApplyPatchToolType>,
     pub web_search_request: bool,
@@ -25,9 +51,9 @@ pub(crate) struct ToolsConfig {
     pub experimental_supported_tools: Vec<String>,
 }
 
-pub(crate) struct ToolsConfigParams<'a> {
-    pub(crate) model_family: &'a ModelFamily,
-    pub(crate) features: &'a Features,
+pub struct ToolsConfigParams<'a> {
+    pub model_family: &'a ModelFamily,
+    pub features: &'a Features,
 }
 
 impl ToolsConfig {
@@ -975,6 +1001,72 @@ fn sanitize_json_schema(value: &mut JsonValue) {
     }
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum ExternalToolsInput {
+    Array(Vec<ExternalTool>),
+    Object { tools: Vec<ExternalTool> },
+}
+
+impl ExternalToolsInput {
+    fn into_vec(self) -> Vec<ExternalTool> {
+        match self {
+            ExternalToolsInput::Array(tools) => tools,
+            ExternalToolsInput::Object { tools } => tools,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+enum ExternalTool {
+    Function {
+        name: String,
+        description: String,
+        #[serde(default)]
+        strict: bool,
+        parameters: JsonSchema,
+    },
+    #[serde(other)]
+    Unsupported,
+}
+
+fn load_function_tools_from_str(contents: &str) -> anyhow::Result<Vec<ToolSpec>> {
+    let parsed: ExternalToolsInput = serde_json::from_str(contents)?;
+    let mut tool_specs = Vec::new();
+    for tool in parsed.into_vec() {
+        match tool {
+            ExternalTool::Function {
+                name,
+                description,
+                strict,
+                parameters,
+            } => {
+                tool_specs.push(ToolSpec::Function(ResponsesApiTool {
+                    name,
+                    description,
+                    strict,
+                    parameters,
+                }));
+            }
+            ExternalTool::Unsupported => {
+                return Err(anyhow!("only function tools are supported"));
+            }
+        }
+    }
+    if tool_specs.is_empty() {
+        return Err(anyhow!("no function tools found"));
+    }
+    Ok(tool_specs)
+}
+
+fn load_function_tools_from_path(path: &Path) -> anyhow::Result<Vec<ToolSpec>> {
+    let contents = fs::read_to_string(path)
+        .with_context(|| format!("failed to read tools file at {}", path.display()))?;
+    load_function_tools_from_str(&contents)
+        .with_context(|| format!("failed to parse tools file JSON at {}", path.display()))
+}
+
 /// Builds the tool registry builder while collecting tool specs for later serialization.
 pub(crate) fn build_specs(
     config: &ToolsConfig,
@@ -1043,6 +1135,7 @@ pub(crate) fn build_specs(
 
     builder.push_spec(PLAN_TOOL.clone());
     builder.register_handler("update_plan", plan_handler);
+    register_ue5_tools(&mut builder);
 
     if let Some(apply_patch_tool_type) = &config.apply_patch_tool_type {
         match apply_patch_tool_type {
@@ -1122,6 +1215,69 @@ pub(crate) fn build_specs(
     builder
 }
 
+pub fn default_tool_specs(config: &ToolsConfig) -> Vec<ToolSpec> {
+    build_specs(config, None)
+        .build()
+        .0
+        .into_iter()
+        .map(|configured| configured.spec)
+        .collect()
+}
+
+pub fn blueprintlm_default_tool_specs(
+    config: &ToolsConfig,
+    tools_path: &std::path::Path,
+) -> anyhow::Result<Vec<ToolSpec>> {
+    blueprintlm_build_specs(config, tools_path, None).map(|builder| {
+        builder
+            .build()
+            .0
+            .into_iter()
+            .map(|configured| configured.spec)
+            .collect()
+    })
+}
+
+pub fn blueprintlm_default_tool_specs_from_str(
+    config: &ToolsConfig,
+    tools_json: &str,
+) -> anyhow::Result<Vec<ToolSpec>> {
+    blueprintlm_build_specs_from_str(config, tools_json, None).map(|builder| {
+        builder
+            .build()
+            .0
+            .into_iter()
+            .map(|configured| configured.spec)
+            .collect()
+    })
+}
+
+pub fn blueprintlm_build_specs(
+    _config: &ToolsConfig,
+    tools_path: &std::path::Path,
+    _mcp_tools: Option<HashMap<String, mcp_types::Tool>>,
+) -> anyhow::Result<ToolRegistryBuilder> {
+    let mut builder = ToolRegistryBuilder::new();
+    let external_tools = load_function_tools_from_path(tools_path)?;
+    for tool in external_tools {
+        builder.push_spec(tool);
+    }
+    Ok(builder)
+}
+
+pub fn blueprintlm_build_specs_from_str(
+    _config: &ToolsConfig,
+    tools_json: &str,
+    _mcp_tools: Option<HashMap<String, mcp_types::Tool>>,
+) -> anyhow::Result<ToolRegistryBuilder> {
+    let mut builder = ToolRegistryBuilder::new();
+    let external_tools = load_function_tools_from_str(tools_json)?;
+    for tool in external_tools {
+        builder.push_spec(tool);
+    }
+    Ok(builder)
+}
+
 #[cfg(test)]
 mod tests {
     use crate::client_common::tools::FreeformTool;
@@ -1130,6 +1286,7 @@ mod tests {
     use crate::tools::registry::ConfiguredToolSpec;
     use mcp_types::ToolInputSchema;
     use pretty_assertions::assert_eq;
+    use tempfile::NamedTempFile;
 
     use super::*;
 
@@ -1220,6 +1377,46 @@ mod tests {
     }
 
     #[test]
+    fn blueprintlm_tools_load_from_json_file() {
+        let tmp = NamedTempFile::new().expect("temp file");
+        std::fs::write(
+            tmp.path(),
+            r#"{"tools":[{"type":"function","name":"get_project_directory","description":"Declares the UE5 project directory resolver. Codex only surfaces the tool; the UE plugin executes it.","parameters":{"type":"object","properties":{"project_dir":{"type":"string"}},"additionalProperties":false},"strict":false}]}"#,
+        )
+        .expect("write tools file");
+
+        let features = Features::with_defaults();
+        let model_family = find_family_for_model("gpt-4.1");
+        let config = ToolsConfig::new(&ToolsConfigParams {
+            model_family: &model_family,
+            features: &features,
+        });
+
+        let tools =
+            blueprintlm_default_tool_specs(&config, tmp.path()).expect("load blueprintlm tools");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tool_name(&tools[0]), "get_project_directory");
+    }
+
+    #[test]
+    fn blueprintlm_tools_load_from_json_str() {
+        let features = Features::with_defaults();
+        let model_family = find_family_for_model("gpt-4.1");
+        let config = ToolsConfig::new(&ToolsConfigParams {
+            model_family: &model_family,
+            features: &features,
+        });
+
+        let tools = blueprintlm_default_tool_specs_from_str(
+            &config,
+            r#"{"tools":[{"type":"function","name":"get_project_directory","description":"Declares the UE5 project directory resolver. Codex only surfaces the tool; the UE plugin executes it.","parameters":{"type":"object","properties":{"project_dir":{"type":"string"}},"additionalProperties":false},"strict":false}]}"#,
+        )
+        .expect("load blueprintlm tools");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tool_name(&tools[0]), "get_project_directory");
+    }
+
+    #[test]
     fn test_full_toolset_specs_for_gpt5_codex_unified_exec_web_search() {
         let config = test_config();
         let model_family = ModelsManager::construct_model_family_offline("gpt-5-codex", &config);
@@ -1258,6 +1455,15 @@ mod tests {
             create_list_mcp_resource_templates_tool(),
             create_read_mcp_resource_tool(),
             PLAN_TOOL.clone(),
+            create_get_project_directory_tool(),
+            create_get_project_context_tool(),
+            create_list_directory_tool(),
+            create_list_assets_tool(),
+            create_open_asset_in_editor_tool(),
+            create_get_blueprint_graph_tool(),
+            create_compile_blueprint_tool(),
+            create_query_log_tool(),
+            create_execute_console_command_tool(),
             create_apply_patch_freeform_tool(),
             ToolSpec::WebSearch {},
             create_view_image_tool(),
@@ -1265,7 +1471,7 @@ mod tests {
             expected.insert(tool_name(&spec).to_string(), spec);
         }
 
-        // Exact name set match — this is the only test allowed to fail when tools change.
+        // Exact name set match  Ethis is the only test allowed to fail when tools change.
         let actual_names: HashSet<_> = actual.keys().cloned().collect();
         let expected_names: HashSet<_> = expected.keys().cloned().collect();
         assert_eq!(actual_names, expected_names, "tool name set mismatch");
@@ -1303,6 +1509,15 @@ mod tests {
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
                 "update_plan",
+                "get_project_directory",
+                "get_project_context",
+                "list_directory",
+                "list_assets",
+                "open_asset_in_editor",
+                "get_blueprint_graph",
+                "compile_blueprint",
+                "query_log",
+                "execute_console_command",
                 "apply_patch",
                 "view_image",
             ],
@@ -1320,6 +1535,15 @@ mod tests {
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
                 "update_plan",
+                "get_project_directory",
+                "get_project_context",
+                "list_directory",
+                "list_assets",
+                "open_asset_in_editor",
+                "get_blueprint_graph",
+                "compile_blueprint",
+                "query_log",
+                "execute_console_command",
                 "apply_patch",
                 "view_image",
             ],
@@ -1340,6 +1564,15 @@ mod tests {
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
                 "update_plan",
+                "get_project_directory",
+                "get_project_context",
+                "list_directory",
+                "list_assets",
+                "open_asset_in_editor",
+                "get_blueprint_graph",
+                "compile_blueprint",
+                "query_log",
+                "execute_console_command",
                 "apply_patch",
                 "web_search",
                 "view_image",
@@ -1361,6 +1594,15 @@ mod tests {
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
                 "update_plan",
+                "get_project_directory",
+                "get_project_context",
+                "list_directory",
+                "list_assets",
+                "open_asset_in_editor",
+                "get_blueprint_graph",
+                "compile_blueprint",
+                "query_log",
+                "execute_console_command",
                 "apply_patch",
                 "web_search",
                 "view_image",
@@ -1379,6 +1621,15 @@ mod tests {
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
                 "update_plan",
+                "get_project_directory",
+                "get_project_context",
+                "list_directory",
+                "list_assets",
+                "open_asset_in_editor",
+                "get_blueprint_graph",
+                "compile_blueprint",
+                "query_log",
+                "execute_console_command",
                 "view_image",
             ],
         );
@@ -1395,6 +1646,15 @@ mod tests {
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
                 "update_plan",
+                "get_project_directory",
+                "get_project_context",
+                "list_directory",
+                "list_assets",
+                "open_asset_in_editor",
+                "get_blueprint_graph",
+                "compile_blueprint",
+                "query_log",
+                "execute_console_command",
                 "apply_patch",
                 "view_image",
             ],
@@ -1412,6 +1672,15 @@ mod tests {
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
                 "update_plan",
+                "get_project_directory",
+                "get_project_context",
+                "list_directory",
+                "list_assets",
+                "open_asset_in_editor",
+                "get_blueprint_graph",
+                "compile_blueprint",
+                "query_log",
+                "execute_console_command",
                 "view_image",
             ],
         );
@@ -1428,6 +1697,15 @@ mod tests {
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
                 "update_plan",
+                "get_project_directory",
+                "get_project_context",
+                "list_directory",
+                "list_assets",
+                "open_asset_in_editor",
+                "get_blueprint_graph",
+                "compile_blueprint",
+                "query_log",
+                "execute_console_command",
                 "apply_patch",
                 "view_image",
             ],
@@ -1446,6 +1724,15 @@ mod tests {
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
                 "update_plan",
+                "get_project_directory",
+                "get_project_context",
+                "list_directory",
+                "list_assets",
+                "open_asset_in_editor",
+                "get_blueprint_graph",
+                "compile_blueprint",
+                "query_log",
+                "execute_console_command",
                 "apply_patch",
                 "view_image",
             ],
@@ -1466,6 +1753,15 @@ mod tests {
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
                 "update_plan",
+                "get_project_directory",
+                "get_project_context",
+                "list_directory",
+                "list_assets",
+                "open_asset_in_editor",
+                "get_blueprint_graph",
+                "compile_blueprint",
+                "query_log",
+                "execute_console_command",
                 "web_search",
                 "view_image",
             ],

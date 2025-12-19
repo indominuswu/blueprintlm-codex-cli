@@ -44,7 +44,15 @@ pub struct Prompt {
 }
 
 impl Prompt {
-    pub(crate) fn get_full_instructions<'a>(&'a self, model: &'a ModelFamily) -> Cow<'a, str> {
+    pub fn set_tools(&mut self, tools: Vec<ToolSpec>) {
+        self.tools = tools;
+    }
+
+    pub fn set_parallel_tool_calls(&mut self, enabled: bool) {
+        self.parallel_tool_calls = enabled;
+    }
+
+    pub fn get_full_instructions<'a>(&'a self, model: &'a ModelFamily) -> Cow<'a, str> {
         let base = self
             .base_instructions_override
             .as_deref()
@@ -68,7 +76,7 @@ impl Prompt {
         }
     }
 
-    pub(crate) fn get_formatted_input(&self) -> Vec<ResponseItem> {
+    pub fn get_formatted_input(&self) -> Vec<ResponseItem> {
         let mut input = self.input.clone();
 
         // when using the *Freeform* apply_patch tool specifically, tool outputs
@@ -84,6 +92,14 @@ impl Prompt {
         }
 
         input
+    }
+
+    pub fn tools(&self) -> &[ToolSpec] {
+        &self.tools
+    }
+
+    pub fn parallel_tool_calls(&self) -> bool {
+        self.parallel_tool_calls
     }
 }
 
@@ -188,7 +204,7 @@ pub(crate) mod tools {
     /// Responses API.
     #[derive(Debug, Clone, Serialize, PartialEq)]
     #[serde(tag = "type")]
-    pub(crate) enum ToolSpec {
+    pub enum ToolSpec {
         #[serde(rename = "function")]
         Function(ResponsesApiTool),
         #[serde(rename = "local_shell")]

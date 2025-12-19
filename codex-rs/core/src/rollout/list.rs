@@ -21,7 +21,7 @@ use codex_protocol::protocol::RolloutLine;
 use codex_protocol::protocol::SessionSource;
 
 /// Returned page of conversation summaries.
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Default, PartialEq, serde::Serialize)]
 pub struct ConversationsPage {
     /// Conversation summaries ordered newest first.
     pub items: Vec<ConversationItem>,
@@ -34,7 +34,7 @@ pub struct ConversationsPage {
 }
 
 /// Summary information for a conversation rollout file.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, serde::Serialize)]
 pub struct ConversationItem {
     /// Absolute path to the rollout file.
     pub path: PathBuf,
@@ -53,6 +53,7 @@ struct HeadTailSummary {
     saw_user_event: bool,
     source: Option<SessionSource>,
     model_provider: Option<String>,
+    project_id: Option<String>,
     created_at: Option<String>,
     updated_at: Option<String>,
 }
@@ -102,13 +103,14 @@ impl<'de> serde::Deserialize<'de> for Cursor {
 /// Retrieve recorded conversation file paths with token pagination. The returned `next_cursor`
 /// can be supplied on the next call to resume after the last returned item, resilient to
 /// concurrent new sessions being appended. Ordering is stable by timestamp desc, then UUID desc.
-pub(crate) async fn get_conversations(
+pub async fn get_conversations(
     codex_home: &Path,
     page_size: usize,
     cursor: Option<&Cursor>,
     allowed_sources: &[SessionSource],
     model_providers: Option<&[String]>,
     default_provider: &str,
+    project_id: Option<&str>,
 ) -> io::Result<ConversationsPage> {
     let mut root = codex_home.to_path_buf();
     root.push(SESSIONS_SUBDIR);
@@ -133,6 +135,7 @@ pub(crate) async fn get_conversations(
         anchor,
         allowed_sources,
         provider_matcher.as_ref(),
+        project_id,
     )
     .await?;
     Ok(result)
@@ -148,6 +151,7 @@ async fn traverse_directories_for_paths(
     anchor: Option<Cursor>,
     allowed_sources: &[SessionSource],
     provider_matcher: Option<&ProviderMatcher<'_>>,
+    project_id: Option<&str>,
 ) -> io::Result<ConversationsPage> {
     let mut items: Vec<ConversationItem> = Vec::with_capacity(page_size);
     let mut scanned_files = 0usize;
@@ -206,20 +210,32 @@ async fn traverse_directories_for_paths(
                     let summary = read_head_summary(&path, HEAD_RECORD_LIMIT)
                         .await
                         .unwrap_or_default();
-                    if !allowed_sources.is_empty()
-                        && !summary
+                    if !allowed_sources.is_empty() {
+                        let source_ok = summary
                             .source
-                            .is_some_and(|source| allowed_sources.iter().any(|s| s == &source))
-                    {
-                        continue;
+                            .as_ref()
+                            .is_some_and(|source| allowed_sources.iter().any(|s| s == source));
+                        if !source_ok {
+                            continue;
+                        }
                     }
-                    if let Some(matcher) = provider_matcher
-                        && !matcher.matches(summary.model_provider.as_deref())
-                    {
-                        continue;
+                    if let Some(matcher) = provider_matcher {
+                        let provider_ok = matcher.matches(summary.model_provider.as_deref());
+                        if !provider_ok {
+                            continue;
+                        }
                     }
-                    // Apply filters: must have session meta and at least one user message event
-                    if summary.saw_session_meta && summary.saw_user_event {
+                    if let Some(expected_project) = project_id {
+                        let project_ok = summary
+                            .project_id
+                            .as_deref()
+                            .is_some_and(|project| project == expected_project);
+                        if !project_ok {
+                            continue;
+                        }
+                    }
+                    // Apply filters: must have session meta
+                    if summary.saw_session_meta {
                         let HeadTailSummary {
                             head,
                             created_at,
@@ -399,6 +415,7 @@ async fn read_head_summary(path: &Path, head_limit: usize) -> io::Result<HeadTai
             RolloutItem::SessionMeta(session_meta_line) => {
                 summary.source = Some(session_meta_line.meta.source.clone());
                 summary.model_provider = session_meta_line.meta.model_provider.clone();
+                summary.project_id = session_meta_line.meta.project_id.clone();
                 summary.created_at = summary
                     .created_at
                     .clone()

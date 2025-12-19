@@ -4,7 +4,7 @@ Codex uses [`AGENTS.md`](https://agents.md/) files to gather helpful guidance be
 
 ## Global Instructions (`~/.codex`)
 
-- Codex looks for global guidance in your Codex home directory (usually `~/.codex`; set `CODEX_HOME` to change it). For a quick overview, see the [Memory with AGENTS.md section](../docs/getting-started.md#memory-with-agentsmd) in the getting started guide.
+- Codex looks for global guidance in your Codex home directory (usually `~/.blueprintlm`; set `BLUEPRINTLM_HOME` to change it). For a quick overview, see the [Memory with AGENTS.md section](../docs/getting-started.md#memory-with-agentsmd) in the getting started guide.
 - If an `AGENTS.override.md` file exists there, it takes priority. If not, Codex falls back to `AGENTS.md`.
 - Only the first non-empty file is used. Other filenames, such as `instructions.md`, have no effect unless Codex is specifically instructed to use them.
 - Whatever Codex finds here stays active for the whole session, and Codex combines it with any project-specific instructions it discovers.
@@ -46,5 +46,15 @@ You can configure those fallbacks in `~/.codex/config.toml` (or another profile)
 ```toml
 project_doc_fallback_filenames = ["TEAM_GUIDE.md", ".agents.md"]
 ```
+
+## Supplying Instructions Directly
+
+If you already have the combined `AGENTS.md` contents on hand, you can pass them straight into the CLI when starting a session. Use `--project-doc` on `blueprintlm start-session` to inject the text instead of letting Codex read from disk. Passing `-` reads from stdin, which is convenient for piping:
+
+```shell
+cat AGENTS.md | blueprintlm start-session --project-id my-project --project-doc -
+```
+
+The `start-session` command requires `--project-doc` and ignores other `AGENTS.md` files when you provide it.
 
 For additional configuration details, see [Config](../docs/config.md) and revisit the [Memory with AGENTS.md guide](../docs/getting-started.md#memory-with-agentsmd) for practical usage tips.

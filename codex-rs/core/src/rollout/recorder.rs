@@ -99,6 +99,7 @@ impl RolloutRecorder {
         allowed_sources: &[SessionSource],
         model_providers: Option<&[String]>,
         default_provider: &str,
+        project_id: Option<&str>,
     ) -> std::io::Result<ConversationsPage> {
         get_conversations(
             codex_home,
@@ -107,6 +108,7 @@ impl RolloutRecorder {
             allowed_sources,
             model_providers,
             default_provider,
+            project_id,
         )
         .await
     }
@@ -148,6 +150,7 @@ impl RolloutRecorder {
                         instructions,
                         source,
                         model_provider: Some(config.model_provider_id.clone()),
+                        project_id: config.project_id.clone(),
                     }),
                 )
             }
@@ -175,6 +178,11 @@ impl RolloutRecorder {
         tokio::task::spawn(rollout_writer(file, rx, meta, cwd));
 
         Ok(Self { tx, rollout_path })
+    }
+
+    /// Append rollout items to the session log.
+    pub async fn append_items(&self, items: &[RolloutItem]) -> std::io::Result<()> {
+        self.record_items(items).await
     }
 
     pub(crate) async fn record_items(&self, items: &[RolloutItem]) -> std::io::Result<()> {

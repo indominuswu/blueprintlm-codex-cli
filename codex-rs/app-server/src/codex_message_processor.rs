@@ -282,13 +282,16 @@ impl CodexMessageProcessor {
     }
 
     async fn load_latest_config(&self) -> Result<Config, JSONRPCErrorError> {
-        Config::load_with_cli_overrides(self.cli_overrides.clone())
-            .await
-            .map_err(|err| JSONRPCErrorError {
-                code: INTERNAL_ERROR_CODE,
-                message: format!("failed to reload config: {err}"),
-                data: None,
-            })
+        Config::load_with_cli_overrides_and_harness_overrides(
+            self.cli_overrides.clone(),
+            ConfigOverrides::default(),
+        )
+        .await
+        .map_err(|err| JSONRPCErrorError {
+            code: INTERNAL_ERROR_CODE,
+            message: format!("failed to reload config: {err}"),
+            data: None,
+        })
     }
 
     fn review_request_from_target(
@@ -1845,6 +1848,7 @@ impl CodexMessageProcessor {
                 INTERACTIVE_SESSION_SOURCES,
                 model_provider_filter.as_deref(),
                 fallback_provider.as_str(),
+                None,
             )
             .await
             .map_err(|err| JSONRPCErrorError {

@@ -107,6 +107,7 @@ async fn resumed_initial_messages_render_history() {
         session_id: conversation_id,
         model: "test-model".to_string(),
         model_provider_id: "test-provider".to_string(),
+        project_id: None,
         approval_policy: AskForApproval::Never,
         sandbox_policy: SandboxPolicy::ReadOnly,
         cwd: PathBuf::from("/home/user/project"),
