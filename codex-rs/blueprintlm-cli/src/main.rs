@@ -81,6 +81,9 @@ enum Subcommand {
     /// Send a prompt and print the model response without launching the TUI.
     Ask(AskCommand),
 
+    /// Validate tools JSON for `ask`.
+    ValidateTools(ValidateToolsCommand),
+
     /// List recorded sessions as JSON.
     Sessions(SessionsCommand),
 
@@ -135,6 +138,13 @@ struct AskCommand {
         help = "Trigger a synthetic stream error for testing (internal)"
     )]
     debug_stream_error: Option<String>,
+}
+
+#[derive(Debug, Parser)]
+struct ValidateToolsCommand {
+    /// JSON tool definitions (use '-' to read from stdin).
+    #[arg(long = "tools", value_name = "TOOLS_JSON", required = true)]
+    tools: String,
 }
 
 #[derive(Debug, Parser)]
@@ -267,6 +277,10 @@ async fn cli_main(_codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<(
             )
             .await?;
         }
+        Subcommand::ValidateTools(ValidateToolsCommand { tools }) => {
+            let tools_json = resolve_tools_input(tools, &mut std::io::stdin().lock())?;
+            run_validate_tools(tools_json, root_config_overrides).await?;
+        }
         Subcommand::Sessions(SessionsCommand {
             page_size,
             cursor,
@@ -396,6 +410,13 @@ struct AskResponse {
     success: bool,
     error: Option<String>,
     response: Vec<RolloutLine>,
+}
+
+#[derive(Serialize)]
+struct ValidateToolsResponse {
+    success: bool,
+    error: Option<String>,
+    tool_count: usize,
 }
 
 #[derive(Serialize)]
@@ -531,6 +552,19 @@ fn resolve_ask_input(input: String, mut reader: impl Read) -> anyhow::Result<Res
         ask_input: parse_ask_input(&buf)?,
         stdin_raw: Some(buf),
     })
+}
+
+fn resolve_tools_input(input: String, mut reader: impl Read) -> anyhow::Result<String> {
+    if input != "-" {
+        return Ok(input);
+    }
+
+    let mut buf = String::new();
+    reader.read_to_string(&mut buf)?;
+    if buf.trim().is_empty() {
+        anyhow::bail!("stdin tools input must not be empty");
+    }
+    Ok(buf)
 }
 
 async fn run_ask(
@@ -883,6 +917,64 @@ async fn run_ask(
     Ok(())
 }
 
+async fn run_validate_tools(
+    tools_json: String,
+    root_config_overrides: CliConfigOverrides,
+) -> anyhow::Result<()> {
+    let cli_overrides = root_config_overrides
+        .parse_overrides()
+        .map_err(anyhow::Error::msg)?;
+    let config = Config::load_with_cli_overrides_and_harness_overrides(
+        cli_overrides,
+        ConfigOverrides::default(),
+    )
+    .await?;
+
+    let auth_manager = AuthManager::shared(
+        config.codex_home.clone(),
+        true,
+        config.cli_auth_credentials_store_mode,
+    );
+    let models_manager = ModelsManager::new(auth_manager);
+    let Some(model) = config.model.as_deref() else {
+        let response = ValidateToolsResponse {
+            success: false,
+            error: Some("model not configured".to_string()),
+            tool_count: 0,
+        };
+        let json = serde_json::to_string_pretty(&response)?;
+        println!("{json}");
+        return Ok(());
+    };
+    let model_family = models_manager.construct_model_family(model, &config).await;
+    let tools_config = ToolsConfig::new(&ToolsConfigParams {
+        model_family: &model_family,
+        features: &config.features,
+    });
+    let tool_count = match blueprintlm_default_tool_specs_from_str(&tools_config, &tools_json) {
+        Ok(tools) => tools.len(),
+        Err(err) => {
+            let response = ValidateToolsResponse {
+                success: false,
+                error: Some(format!("Failed to load tools: {err}")),
+                tool_count: 0,
+            };
+            let json = serde_json::to_string_pretty(&response)?;
+            println!("{json}");
+            return Ok(());
+        }
+    };
+
+    let response = ValidateToolsResponse {
+        success: true,
+        error: None,
+        tool_count,
+    };
+    let json = serde_json::to_string_pretty(&response)?;
+    println!("{json}");
+    Ok(())
+}
+
 async fn run_rollout_history(
     session_id: String,
     root_config_overrides: CliConfigOverrides,
@@ -1201,6 +1293,17 @@ mod tests {
     }
 
     #[test]
+    fn validate_tools_subcommand_parses() {
+        let cli =
+            MultitoolCli::try_parse_from(["blueprintlm-cli", "validate-tools", "--tools", "-"])
+                .expect("parse");
+        let Subcommand::ValidateTools(ValidateToolsCommand { tools }) = cli.subcommand else {
+            unreachable!()
+        };
+        assert_eq!(tools, "-");
+    }
+
+    #[test]
     fn models_subcommand_parses() {
         let cli = MultitoolCli::try_parse_from(["blueprintlm-cli", "models"]).expect("parse");
         assert!(matches!(cli.subcommand, Subcommand::Models));
@@ -1277,6 +1380,14 @@ mod tests {
                 "strict": false
             }])
         );
+    }
+
+    #[test]
+    fn resolve_tools_input_reads_from_stdin() {
+        let tools_json = r#"[{"type":"function","name":"get_project_directory","description":"Declares the UE5 project directory resolver. Codex only surfaces the tool; the UE plugin executes it.","parameters":{"type":"object","properties":{"project_dir":{"type":"string"}},"additionalProperties":false},"strict":false}]"#;
+        let mut stdin = Cursor::new(tools_json);
+        let tools = resolve_tools_input("-".to_string(), &mut stdin).expect("tools input");
+        assert_eq!(tools, tools_json);
     }
 
     #[test]

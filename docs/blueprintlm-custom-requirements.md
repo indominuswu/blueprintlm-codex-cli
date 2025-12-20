@@ -9,6 +9,7 @@ This file captures BlueprintLM-only behavior that needs to survive merges from u
 - Tools passed to `ask` are the entire prompt tool set (`blueprintlm_default_tool_specs_from_str`); there is no config-side lookup. Caller-provided tools must keep working.
 - `ask` appends rollout items to the existing session, logs to `$BLUEPRINTLM_HOME/log/YYYY/MM/DD/ask-*.log`, and respects `--add-dir`/`--cd` for workspace rooting.
 - Output schema is `{"success": bool, "error": Option<String>, "response": Vec<RolloutLine>}`; do not break this contract.
+- `validate-tools --tools <TOOLS_JSON>` validates tools input (use `-` for stdin) and returns `{"success": bool, "error": Option<String>, "tool_count": usize}`.
 - Debug hooks: `--debug-stream-error <kind>` (with `BLUEPRINTLM_DEBUG_STREAM_ERROR`) and `--debug-save-prompts` which writes prettified prompts to `$BLUEPRINTLM_HOME/debug/prompts` via `CODEX_SAVE_PROMPTS_DIR`.
 
 ## Session lifecycle
