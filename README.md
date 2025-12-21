@@ -13,3 +13,13 @@ Usage:
 ```shell
 echo '<the-json-above>' | blueprintlm-cli ask --session-id SESSION_ID -
 ```
+
+## Streaming output
+
+Use `--stream` to emit output text deltas as NDJSON before the final AskResponse:
+
+```shell
+echo '<the-json-above>' | blueprintlm-cli ask --stream --session-id SESSION_ID -
+```
+
+Each line includes `success`, `error`, and a `type` such as `created`, `output_text_delta`, `reasoning_summary_delta`, `reasoning_content_delta`, `reasoning_summary_part_added`, `output_item_added`, `output_item_done`, `rate_limits`, `completed`. Item events include the full `ResponseItem`; the final line is the usual AskResponse JSON.

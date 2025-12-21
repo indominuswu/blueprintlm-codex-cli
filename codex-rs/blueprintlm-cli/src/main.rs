@@ -33,10 +33,12 @@ use codex_protocol::ConversationId;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::InitialHistory;
+use codex_protocol::protocol::RateLimitSnapshot;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::RolloutLine;
 use codex_protocol::protocol::SessionConfiguredEvent;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::TokenUsage;
 use futures_util::StreamExt;
 use serde::Deserialize;
 use serde::Serialize;
@@ -51,6 +53,7 @@ use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 use time::OffsetDateTime;
@@ -129,6 +132,10 @@ struct AskCommand {
     /// Tell the agent to use the specified directory as its working root.
     #[clap(long = "cd", short = 'C', value_name = "DIR")]
     cwd: Option<PathBuf>,
+
+    /// Stream output text deltas as NDJSON before the final response.
+    #[arg(long = "stream", default_value_t = false)]
+    stream: bool,
 
     /// Trigger a synthetic stream error instead of calling the API (debug only).
     #[arg(
@@ -263,17 +270,21 @@ async fn cli_main(_codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<(
             debug_save_prompts,
             add_dir,
             cwd,
+            stream,
             debug_stream_error,
         }) => {
             let resolved_ask_input = resolve_ask_input(input, &mut std::io::stdin().lock())?;
             run_ask(
                 resolved_ask_input,
-                session_id,
-                debug_save_prompts,
-                add_dir,
-                cwd,
-                debug_stream_error,
-                root_config_overrides,
+                AskRunParams {
+                    session_id,
+                    debug_save_prompts,
+                    add_dir,
+                    cwd,
+                    stream_output: stream,
+                    debug_stream_error,
+                    root_config_overrides,
+                },
             )
             .await?;
         }
@@ -413,6 +424,47 @@ struct AskResponse {
 }
 
 #[derive(Serialize)]
+struct AskStreamEvent {
+    success: bool,
+    error: Option<String>,
+    #[serde(flatten)]
+    event: AskStreamEventKind,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum AskStreamEventKind {
+    Created,
+    OutputTextDelta {
+        delta: String,
+    },
+    ReasoningSummaryDelta {
+        delta: String,
+        summary_index: i64,
+    },
+    ReasoningContentDelta {
+        delta: String,
+        content_index: i64,
+    },
+    ReasoningSummaryPartAdded {
+        summary_index: i64,
+    },
+    OutputItemAdded {
+        item: ResponseItem,
+    },
+    OutputItemDone {
+        item: ResponseItem,
+    },
+    Completed {
+        response_id: String,
+        token_usage: Option<TokenUsage>,
+    },
+    RateLimits {
+        snapshot: RateLimitSnapshot,
+    },
+}
+
+#[derive(Serialize)]
 struct ValidateToolsResponse {
     success: bool,
     error: Option<String>,
@@ -435,14 +487,29 @@ struct RolloutHistoryResponse {
     history: Vec<RolloutLine>,
 }
 
-fn emit_error(error: String) -> anyhow::Result<()> {
+fn emit_error(error: String, pretty: bool) -> anyhow::Result<()> {
     let response = AskResponse {
         success: false,
         error: Some(error),
         response: Vec::new(),
     };
-    let json = serde_json::to_string_pretty(&response)?;
+    print_ask_response(&response, pretty)
+}
+
+fn print_ask_response(response: &AskResponse, pretty: bool) -> anyhow::Result<()> {
+    let json = if pretty {
+        serde_json::to_string_pretty(response)?
+    } else {
+        serde_json::to_string(response)?
+    };
     println!("{json}");
+    Ok(())
+}
+
+fn emit_stream_event(writer: &mut impl Write, event: AskStreamEvent) -> anyhow::Result<()> {
+    let json = serde_json::to_string(&event)?;
+    writeln!(writer, "{json}")?;
+    writer.flush()?;
     Ok(())
 }
 
@@ -530,6 +597,16 @@ struct ResolvedAskInput {
     stdin_raw: Option<String>,
 }
 
+struct AskRunParams {
+    session_id: String,
+    debug_save_prompts: bool,
+    add_dir: Vec<PathBuf>,
+    cwd: Option<PathBuf>,
+    stream_output: bool,
+    debug_stream_error: Option<String>,
+    root_config_overrides: CliConfigOverrides,
+}
+
 fn parse_ask_input(raw: &str) -> anyhow::Result<AskInput> {
     serde_json::from_str(raw)
         .context("invalid ask input JSON; expected object with \"payload\" and \"tools\"")
@@ -567,19 +644,20 @@ fn resolve_tools_input(input: String, mut reader: impl Read) -> anyhow::Result<S
     Ok(buf)
 }
 
-async fn run_ask(
-    resolved_ask_input: ResolvedAskInput,
-    session_id: String,
-    debug_save_prompts: bool,
-    add_dir: Vec<PathBuf>,
-    cwd: Option<PathBuf>,
-    debug_stream_error: Option<String>,
-    root_config_overrides: CliConfigOverrides,
-) -> anyhow::Result<()> {
+async fn run_ask(resolved_ask_input: ResolvedAskInput, params: AskRunParams) -> anyhow::Result<()> {
     let ResolvedAskInput {
         ask_input,
         stdin_raw,
     } = resolved_ask_input;
+    let AskRunParams {
+        session_id,
+        debug_save_prompts,
+        add_dir,
+        cwd,
+        stream_output,
+        debug_stream_error,
+        root_config_overrides,
+    } = params;
     let cli_overrides = root_config_overrides
         .parse_overrides()
         .map_err(anyhow::Error::msg)?;
@@ -607,7 +685,7 @@ async fn run_ask(
     );
     let models_manager = ModelsManager::new(auth_manager.clone());
     let Some(model) = config.model.as_deref() else {
-        emit_error("model not configured".to_string())?;
+        emit_error("model not configured".to_string(), !stream_output)?;
         return Ok(());
     };
     let model_family = models_manager.construct_model_family(model, &config).await;
@@ -615,7 +693,7 @@ async fn run_ask(
     let conversation_id = match ConversationId::from_string(&session_id) {
         Ok(id) => id,
         Err(err) => {
-            emit_error(err.to_string())?;
+            emit_error(err.to_string(), !stream_output)?;
             return Ok(());
         }
     };
@@ -623,38 +701,80 @@ async fn run_ask(
     {
         Ok(Some(path)) => path,
         Ok(None) => {
-            emit_error(format!("Session with id {session_id} not found"))?;
+            emit_error(
+                format!("Session with id {session_id} not found"),
+                !stream_output,
+            )?;
             return Ok(());
         }
         Err(err) => {
-            emit_error(format!("Failed to locate session: {err}"))?;
+            emit_error(format!("Failed to locate session: {err}"), !stream_output)?;
             return Ok(());
         }
     };
     let initial_history = match RolloutRecorder::get_rollout_history(&rollout_path).await {
         Ok(history) => history,
         Err(err) => {
-            emit_error(format!("Failed to load session history: {err}"))?;
+            emit_error(
+                format!("Failed to load session history: {err}"),
+                !stream_output,
+            )?;
             return Ok(());
         }
     };
     let (resumed_id, mut history_items) = match response_items_from_history(&initial_history) {
         Ok((id, items)) => (id, items),
         Err(err) => {
-            emit_error(err.to_string())?;
+            emit_error(err.to_string(), !stream_output)?;
             return Ok(());
         }
     };
+    let history_item_count = history_items.len();
     if resumed_id != conversation_id {
-        emit_error("Session id mismatch between provided id and rollout history".to_string())?;
+        emit_error(
+            "Session id mismatch between provided id and rollout history".to_string(),
+            !stream_output,
+        )?;
         return Ok(());
     }
     let mut ask_log = create_ask_log_file(&config.codex_home, &conversation_id);
     let _tracing_guard = ask_log.as_ref().and_then(init_tracing);
     log_line(&mut ask_log, "ask started");
+    log_line(&mut ask_log, format!("session id: {conversation_id}"));
+    let rollout_path_display = rollout_path.display();
+    log_line(
+        &mut ask_log,
+        format!("rollout path: {rollout_path_display}"),
+    );
+    let debug_stream_error_summary = debug_stream_error.as_deref().unwrap_or("none");
+    log_line(
+        &mut ask_log,
+        format!(
+            "stream_output: {stream_output}, debug_save_prompts: {debug_save_prompts}, debug_stream_error: {debug_stream_error_summary}"
+        ),
+    );
+    if let Some(cwd) = &cwd {
+        let cwd_display = cwd.display();
+        log_line(&mut ask_log, format!("cwd override: {cwd_display}"));
+    }
+    if !add_dir.is_empty() {
+        let add_dir_list = add_dir
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        log_line(
+            &mut ask_log,
+            format!("additional writable roots: {add_dir_list}"),
+        );
+    }
     if let Some(stdin_raw) = stdin_raw {
         log_line(&mut ask_log, format!("stdin ask input: {stdin_raw}"));
     }
+    log_line(
+        &mut ask_log,
+        format!("loaded {history_item_count} history items from rollout"),
+    );
     info!(
         session_id = %conversation_id,
         rollout_path = %rollout_path.display(),
@@ -683,6 +803,30 @@ async fn run_ask(
         SessionSource::Cli,
     );
     let provider = config.model_provider.clone();
+    let provider_name = provider.name.clone();
+    let provider_base_url = provider
+        .base_url
+        .clone()
+        .unwrap_or_else(|| "default".to_string());
+    let provider_wire = provider.wire_api;
+    let provider_stream_idle_timeout_ms = provider.stream_idle_timeout().as_millis();
+    let model_family_slug = model_family.slug.as_str();
+    log_line(
+        &mut ask_log,
+        format!("model: {model} (family: {model_family_slug})"),
+    );
+    log_line(
+        &mut ask_log,
+        format!("provider: {provider_name} (wire: {provider_wire:?})"),
+    );
+    log_line(
+        &mut ask_log,
+        format!("provider base_url: {provider_base_url}"),
+    );
+    log_line(
+        &mut ask_log,
+        format!("stream_idle_timeout_ms: {provider_stream_idle_timeout_ms}"),
+    );
     let client = ModelClient::new(
         Arc::new(config.clone()),
         Some(auth_manager),
@@ -706,19 +850,20 @@ async fn run_ask(
         Err(err_vec) => match serde_json::from_str::<ResponseInputItem>(&payload_json) {
             Ok(item) => vec![item],
             Err(err_single) => {
-                emit_error(format!(
-                    "Invalid payload JSON (array parse error: {err_vec}; single parse error: {err_single})"
-                ))?;
+                emit_error(
+                    format!(
+                        "Invalid payload JSON (array parse error: {err_vec}; single parse error: {err_single})"
+                    ),
+                    !stream_output,
+                )?;
                 return Ok(());
             }
         },
     };
+    let new_items_count = response_inputs.len();
     log_line(
         &mut ask_log,
-        format!(
-            "parsed payload into {} ResponseInputItem entries",
-            response_inputs.len()
-        ),
+        format!("parsed payload into {new_items_count} ResponseInputItem entries"),
     );
     let mut new_items: Vec<ResponseItem> = Vec::new();
     let mut prompt = Prompt::default();
@@ -728,9 +873,12 @@ async fn run_ask(
         prompt.input.push(response_item.clone());
         new_items.push(response_item);
     }
+    let total_prompt_items = prompt.input.len();
     log_line(
         &mut ask_log,
-        format!("seeded prompt with {} history items", prompt.input.len()),
+        format!(
+            "seeded prompt with {history_item_count} history items and {new_items_count} new items (total {total_prompt_items})"
+        ),
     );
     if let Some(recorder) = rollout_recorder.as_ref() {
         let to_record: Vec<RolloutItem> = new_items
@@ -752,14 +900,21 @@ async fn run_ask(
     let tools = match blueprintlm_default_tool_specs_from_str(&tools_config, &tools_json) {
         Ok(tools) => tools,
         Err(err) => {
-            emit_error(format!("Failed to load tools from ask input: {err}"))?;
+            emit_error(
+                format!("Failed to load tools from ask input: {err}"),
+                !stream_output,
+            )?;
             return Ok(());
         }
     };
+    let tool_count = tools.len();
+    let parallel_tool_calls = model_family.supports_parallel_tool_calls
+        && config.features.enabled(Feature::ParallelToolCalls);
     prompt.set_tools(tools);
-    prompt.set_parallel_tool_calls(
-        model_family.supports_parallel_tool_calls
-            && config.features.enabled(Feature::ParallelToolCalls),
+    prompt.set_parallel_tool_calls(parallel_tool_calls);
+    log_line(
+        &mut ask_log,
+        format!("loaded {tool_count} tools (parallel_tool_calls: {parallel_tool_calls})"),
     );
 
     if debug_save_prompts {
@@ -778,6 +933,10 @@ async fn run_ask(
         if let Some(parent) = path.parent() {
             if let Err(err) = fs::create_dir_all(parent) {
                 eprintln!("Failed to create prompt debug directory: {err}");
+                log_line(
+                    &mut ask_log,
+                    format!("failed to create prompt debug directory: {err}"),
+                );
             } else {
                 let payload = serde_json::json!({
                     "input": prompt.get_formatted_input(),
@@ -789,10 +948,24 @@ async fn run_ask(
                     Ok(serialized) => {
                         if let Err(err) = fs::write(&path, serialized) {
                             eprintln!("Failed to write prompt debug file: {err}");
+                            log_line(
+                                &mut ask_log,
+                                format!("failed to write prompt debug file: {err}"),
+                            );
+                        } else {
+                            let path_display = path.display();
+                            log_line(
+                                &mut ask_log,
+                                format!("saved prompt debug payload to {path_display}"),
+                            );
                         }
                     }
                     Err(err) => {
                         eprintln!("Failed to serialize prompt debug payload: {err}");
+                        log_line(
+                            &mut ask_log,
+                            format!("failed to serialize prompt debug payload: {err}"),
+                        );
                     }
                 }
             }
@@ -805,14 +978,34 @@ async fn run_ask(
         None
     };
     if let Some(kind) = debug_stream_error.clone() {
+        log_line(&mut ask_log, format!("debug stream error injected: {kind}"));
         unsafe {
             env::set_var("BLUEPRINTLM_DEBUG_STREAM_ERROR", kind);
         }
     }
 
+    log_line(
+        &mut ask_log,
+        format!(
+            "starting response stream (provider: {provider_name}, wire: {provider_wire:?}, base_url: {provider_base_url})"
+        ),
+    );
+    let request_started = Instant::now();
     let mut stream = match client.stream(&prompt).await {
-        Ok(stream) => stream,
+        Ok(stream) => {
+            let elapsed_ms = request_started.elapsed().as_millis();
+            log_line(
+                &mut ask_log,
+                format!("response stream opened after {elapsed_ms}ms"),
+            );
+            stream
+        }
         Err(err) => {
+            let elapsed_ms = request_started.elapsed().as_millis();
+            log_line(
+                &mut ask_log,
+                format!("response stream failed after {elapsed_ms}ms: {err}"),
+            );
             if debug_stream_error.is_some() {
                 if let Some(prev) = previous_debug_stream_error {
                     unsafe {
@@ -829,8 +1022,7 @@ async fn run_ask(
                 error: Some(err.to_string()),
                 response: Vec::new(),
             };
-            let json = serde_json::to_string_pretty(&response)?;
-            println!("{json}");
+            print_ask_response(&response, !stream_output)?;
             return Ok(());
         }
     };
@@ -845,27 +1037,217 @@ async fn run_ask(
             }
         }
     }
+    let stdout = io::stdout();
+    let mut stream_stdout = if stream_output {
+        Some(stdout.lock())
+    } else {
+        None
+    };
+    let mut first_event_logged = false;
+    let mut saw_completed = false;
+    let mut output_text_delta_count = 0usize;
+    let mut reasoning_summary_delta_count = 0usize;
+    let mut reasoning_content_delta_count = 0usize;
+    let mut reasoning_summary_part_added_count = 0usize;
+    let mut output_item_added_count = 0usize;
+    let mut output_item_done_count = 0usize;
+    let mut rate_limit_event_count = 0usize;
+    let mut completed_response_id: Option<String> = None;
+    let mut completed_token_usage: Option<TokenUsage> = None;
     let mut stream_error = None;
     let mut collected_items: Vec<RolloutLine> = Vec::new();
     while let Some(event) = stream.next().await {
         match event {
-            Ok(ev) => match ev {
-                ResponseEvent::OutputTextDelta(_) => {}
-                ResponseEvent::OutputItemAdded(_) => {}
-                ResponseEvent::OutputItemDone(item) => {
-                    let timestamp = OffsetDateTime::now_utc()
+            Ok(ev) => {
+                if !first_event_logged {
+                    let elapsed_ms = request_started.elapsed().as_millis();
+                    log_line(
+                        &mut ask_log,
+                        format!("first stream event after {elapsed_ms}ms"),
+                    );
+                    first_event_logged = true;
+                }
+                match ev {
+                    ResponseEvent::Created => {
+                        if let Some(stdout) = stream_stdout.as_mut() {
+                            emit_stream_event(
+                                stdout,
+                                AskStreamEvent {
+                                    success: true,
+                                    error: None,
+                                    event: AskStreamEventKind::Created,
+                                },
+                            )?;
+                        }
+                    }
+                    ResponseEvent::OutputTextDelta(delta) => {
+                        output_text_delta_count += 1;
+                        if let Some(stdout) = stream_stdout.as_mut() {
+                            emit_stream_event(
+                                stdout,
+                                AskStreamEvent {
+                                    success: true,
+                                    error: None,
+                                    event: AskStreamEventKind::OutputTextDelta { delta },
+                                },
+                            )?;
+                        }
+                    }
+                    ResponseEvent::ReasoningSummaryDelta {
+                        delta,
+                        summary_index,
+                    } => {
+                        reasoning_summary_delta_count += 1;
+                        if let Some(stdout) = stream_stdout.as_mut() {
+                            emit_stream_event(
+                                stdout,
+                                AskStreamEvent {
+                                    success: true,
+                                    error: None,
+                                    event: AskStreamEventKind::ReasoningSummaryDelta {
+                                        delta,
+                                        summary_index,
+                                    },
+                                },
+                            )?;
+                        }
+                    }
+                    ResponseEvent::ReasoningContentDelta {
+                        delta,
+                        content_index,
+                    } => {
+                        reasoning_content_delta_count += 1;
+                        if let Some(stdout) = stream_stdout.as_mut() {
+                            emit_stream_event(
+                                stdout,
+                                AskStreamEvent {
+                                    success: true,
+                                    error: None,
+                                    event: AskStreamEventKind::ReasoningContentDelta {
+                                        delta,
+                                        content_index,
+                                    },
+                                },
+                            )?;
+                        }
+                    }
+                    ResponseEvent::ReasoningSummaryPartAdded { summary_index } => {
+                        reasoning_summary_part_added_count += 1;
+                        if let Some(stdout) = stream_stdout.as_mut() {
+                            emit_stream_event(
+                                stdout,
+                                AskStreamEvent {
+                                    success: true,
+                                    error: None,
+                                    event: AskStreamEventKind::ReasoningSummaryPartAdded {
+                                        summary_index,
+                                    },
+                                },
+                            )?;
+                        }
+                    }
+                    ResponseEvent::OutputItemAdded(item) => {
+                        output_item_added_count += 1;
+                        if let Some(stdout) = stream_stdout.as_mut() {
+                            emit_stream_event(
+                                stdout,
+                                AskStreamEvent {
+                                    success: true,
+                                    error: None,
+                                    event: AskStreamEventKind::OutputItemAdded { item },
+                                },
+                            )?;
+                        }
+                    }
+                    ResponseEvent::OutputItemDone(item) => {
+                        output_item_done_count += 1;
+                        if let Some(stdout) = stream_stdout.as_mut() {
+                            emit_stream_event(
+                                stdout,
+                                AskStreamEvent {
+                                    success: true,
+                                    error: None,
+                                    event: AskStreamEventKind::OutputItemDone {
+                                        item: item.clone(),
+                                    },
+                                },
+                            )?;
+                        }
+                        let timestamp = OffsetDateTime::now_utc()
                         .format(&format_description!(
                             "[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]Z"
                         ))
                         .unwrap_or_else(|_| "unknown".to_string());
-                    collected_items.push(RolloutLine {
-                        timestamp,
-                        item: RolloutItem::ResponseItem(item),
-                    });
+                        collected_items.push(RolloutLine {
+                            timestamp,
+                            item: RolloutItem::ResponseItem(item),
+                        });
+                    }
+                    ResponseEvent::Completed {
+                        response_id,
+                        token_usage,
+                    } => {
+                        let response_id_for_log = response_id.clone();
+                        let token_usage_for_log = token_usage.clone();
+                        if let Some(stdout) = stream_stdout.as_mut() {
+                            emit_stream_event(
+                                stdout,
+                                AskStreamEvent {
+                                    success: true,
+                                    error: None,
+                                    event: AskStreamEventKind::Completed {
+                                        response_id,
+                                        token_usage,
+                                    },
+                                },
+                            )?;
+                        }
+                        saw_completed = true;
+                        completed_response_id = Some(response_id_for_log.clone());
+                        completed_token_usage = token_usage_for_log.clone();
+                        let elapsed_ms = request_started.elapsed().as_millis();
+                        let token_usage_summary = token_usage_for_log
+                            .as_ref()
+                            .map(|usage| format!("{usage:?}"))
+                            .unwrap_or_else(|| "none".to_string());
+                        log_line(
+                            &mut ask_log,
+                            format!(
+                                "response completed: id={response_id_for_log} elapsed_ms={elapsed_ms} token_usage={token_usage_summary}"
+                            ),
+                        );
+                        break;
+                    }
+                    ResponseEvent::RateLimits(snapshot) => {
+                        rate_limit_event_count += 1;
+                        let snapshot_for_log = snapshot.clone();
+                        if let Some(stdout) = stream_stdout.as_mut() {
+                            emit_stream_event(
+                                stdout,
+                                AskStreamEvent {
+                                    success: true,
+                                    error: None,
+                                    event: AskStreamEventKind::RateLimits { snapshot },
+                                },
+                            )?;
+                        }
+                        match serde_json::to_string(&snapshot_for_log) {
+                            Ok(snapshot_json) => {
+                                log_line(
+                                    &mut ask_log,
+                                    format!("rate limits update: {snapshot_json}"),
+                                );
+                            }
+                            Err(err) => {
+                                log_line(
+                                    &mut ask_log,
+                                    format!("failed to serialize rate limits snapshot: {err}"),
+                                );
+                            }
+                        }
+                    }
                 }
-                ResponseEvent::Completed { .. } => break,
-                _ => {}
-            },
+            }
             Err(err) => {
                 stream_error = Some(err.to_string());
                 warn!(
@@ -873,19 +1255,43 @@ async fn run_ask(
                     error = %err,
                     "stream returned error"
                 );
-                log_line(&mut ask_log, format!("stream error: {err}"));
+                let elapsed_ms = request_started.elapsed().as_millis();
+                log_line(
+                    &mut ask_log,
+                    format!("stream error after {elapsed_ms}ms: {err}"),
+                );
                 break;
             }
         }
     }
 
+    let stream_error_summary = stream_error.as_deref().unwrap_or("none");
+    let elapsed_ms = request_started.elapsed().as_millis();
+    let response_items_count = collected_items.len();
     log_line(
         &mut ask_log,
         format!(
-            "stream finished with {} response items",
-            collected_items.len()
+            "stream summary: completed={saw_completed} error={stream_error_summary} response_items={response_items_count} elapsed_ms={elapsed_ms}"
         ),
     );
+    log_line(
+        &mut ask_log,
+        format!(
+            "stream event counts: output_text_deltas={output_text_delta_count}, output_items_added={output_item_added_count}, output_items_done={output_item_done_count}, reasoning_summary_deltas={reasoning_summary_delta_count}, reasoning_content_deltas={reasoning_content_delta_count}, reasoning_summary_parts={reasoning_summary_part_added_count}, rate_limit_updates={rate_limit_event_count}"
+        ),
+    );
+    if let Some(response_id) = completed_response_id.as_deref() {
+        let token_usage_summary = completed_token_usage
+            .as_ref()
+            .map(|usage| format!("{usage:?}"))
+            .unwrap_or_else(|| "none".to_string());
+        log_line(
+            &mut ask_log,
+            format!(
+                "completed response summary: id={response_id} token_usage={token_usage_summary}"
+            ),
+        );
+    }
     let response = AskResponse {
         success: stream_error.is_none(),
         error: stream_error,
@@ -911,8 +1317,13 @@ async fn run_ask(
         }
     }
     log_line(&mut ask_log, "writing AskResponse JSON to stdout");
-    let json = serde_json::to_string_pretty(&response)?;
-    println!("{json}");
+    if let Some(stdout) = stream_stdout.as_mut() {
+        let json = serde_json::to_string(&response)?;
+        writeln!(stdout, "{json}")?;
+        stdout.flush()?;
+    } else {
+        print_ask_response(&response, true)?;
+    }
 
     Ok(())
 }
@@ -1279,6 +1690,7 @@ mod tests {
             add_dir,
             cwd,
             debug_save_prompts,
+            stream,
             debug_stream_error,
         }) = cli.subcommand
         else {
@@ -1289,6 +1701,7 @@ mod tests {
         assert_eq!(add_dir, vec![std::path::PathBuf::from("/tmp/foo")]);
         assert_eq!(cwd.as_deref(), Some(std::path::Path::new("/tmp")));
         assert!(!debug_save_prompts);
+        assert!(!stream);
         assert!(debug_stream_error.is_none());
     }
 
