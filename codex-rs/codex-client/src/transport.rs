@@ -10,8 +10,10 @@ use futures::stream::BoxStream;
 use http::HeaderMap;
 use http::Method;
 use http::StatusCode;
+use serde_json::Value;
 use tracing::Level;
 use tracing::enabled;
+use tracing::info;
 use tracing::trace;
 
 pub type ByteStream = BoxStream<'static, Result<Bytes, TransportError>>;
@@ -66,6 +68,13 @@ impl ReqwestTransport {
     }
 }
 
+fn log_json_response(status: StatusCode, body: &[u8]) {
+    let Ok(value) = serde_json::from_slice::<Value>(body) else {
+        return;
+    };
+    info!(status = %status, json = %value, "API JSON response");
+}
+
 #[async_trait]
 impl HttpTransport for ReqwestTransport {
     async fn execute(&self, req: Request) -> Result<Response, TransportError> {
@@ -74,6 +83,7 @@ impl HttpTransport for ReqwestTransport {
         let status = resp.status();
         let headers = resp.headers().clone();
         let bytes = resp.bytes().await.map_err(Self::map_error)?;
+        log_json_response(status, bytes.as_ref());
         if !status.is_success() {
             let body = String::from_utf8(bytes.to_vec()).ok();
             return Err(TransportError::Http {
@@ -105,6 +115,9 @@ impl HttpTransport for ReqwestTransport {
         let headers = resp.headers().clone();
         if !status.is_success() {
             let body = resp.text().await.ok();
+            if let Some(body) = body.as_deref() {
+                log_json_response(status, body.as_bytes());
+            }
             return Err(TransportError::Http {
                 status,
                 headers: Some(headers),

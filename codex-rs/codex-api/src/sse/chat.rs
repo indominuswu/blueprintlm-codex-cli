@@ -16,6 +16,7 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tokio::time::timeout;
 use tracing::debug;
+use tracing::info;
 use tracing::trace;
 
 pub(crate) fn spawn_chat_stream(
@@ -99,22 +100,22 @@ pub async fn process_chat_sse<S>(
             }
         };
 
-        trace!("SSE event: {}", sse.data);
+        let raw = sse.data;
+        trace!("SSE event: {raw}");
 
-        if sse.data.trim().is_empty() {
+        if raw.trim().is_empty() {
             continue;
         }
 
-        let value: serde_json::Value = match serde_json::from_str(&sse.data) {
+        let value: serde_json::Value = match serde_json::from_str(&raw) {
             Ok(val) => val,
             Err(err) => {
-                debug!(
-                    "Failed to parse ChatCompletions SSE event: {err}, data: {}",
-                    &sse.data
-                );
+                debug!("Failed to parse ChatCompletions SSE event: {err}, data: {raw}");
                 continue;
             }
         };
+
+        info!(json = %raw, "API SSE JSON");
 
         let Some(choices) = value.get("choices").and_then(|c| c.as_array()) else {
             continue;

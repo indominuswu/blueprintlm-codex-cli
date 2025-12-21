@@ -113,7 +113,7 @@ enum Subcommand {
 
 #[derive(Debug, Parser)]
 struct AskCommand {
-    /// JSON object containing a payload and tool definitions (use '-' to read from stdin).
+    /// JSON object containing payloads and tool definitions (use '-' to read from stdin).
     #[arg(value_name = "ASK_INPUT_JSON")]
     input: String,
 
@@ -588,7 +588,7 @@ fn read_full_rollout(path: &Path) -> io::Result<(Vec<RolloutLine>, ConversationI
 
 #[derive(Debug, Deserialize)]
 struct AskInput {
-    payload: serde_json::Value,
+    payloads: serde_json::Value,
     tools: serde_json::Value,
 }
 
@@ -609,7 +609,7 @@ struct AskRunParams {
 
 fn parse_ask_input(raw: &str) -> anyhow::Result<AskInput> {
     serde_json::from_str(raw)
-        .context("invalid ask input JSON; expected object with \"payload\" and \"tools\"")
+        .context("invalid ask input JSON; expected object with \"payloads\" and \"tools\"")
 }
 
 fn resolve_ask_input(input: String, mut reader: impl Read) -> anyhow::Result<ResolvedAskInput> {
@@ -839,31 +839,25 @@ async fn run_ask(resolved_ask_input: ResolvedAskInput, params: AskRunParams) -> 
         SessionSource::Cli,
     );
 
-    let payload_json =
-        serde_json::to_string(&ask_input.payload).context("failed to serialize ask payload")?;
+    let payloads_json =
+        serde_json::to_string(&ask_input.payloads).context("failed to serialize ask payloads")?;
     let tools_json =
         serde_json::to_string(&ask_input.tools).context("failed to serialize ask tools")?;
-    let response_inputs: Vec<ResponseInputItem> = match serde_json::from_str::<Vec<ResponseInputItem>>(
-        &payload_json,
-    ) {
-        Ok(items) => items,
-        Err(err_vec) => match serde_json::from_str::<ResponseInputItem>(&payload_json) {
-            Ok(item) => vec![item],
-            Err(err_single) => {
+    let response_inputs: Vec<ResponseInputItem> =
+        match serde_json::from_str::<Vec<ResponseInputItem>>(&payloads_json) {
+            Ok(items) => items,
+            Err(err) => {
                 emit_error(
-                    format!(
-                        "Invalid payload JSON (array parse error: {err_vec}; single parse error: {err_single})"
-                    ),
+                    format!("Invalid payloads JSON (array parse error: {err})"),
                     !stream_output,
                 )?;
                 return Ok(());
             }
-        },
-    };
+        };
     let new_items_count = response_inputs.len();
     log_line(
         &mut ask_log,
-        format!("parsed payload into {new_items_count} ResponseInputItem entries"),
+        format!("parsed payloads into {new_items_count} ResponseInputItem entries"),
     );
     let mut new_items: Vec<ResponseItem> = Vec::new();
     let mut prompt = Prompt::default();
@@ -1069,6 +1063,7 @@ async fn run_ask(resolved_ask_input: ResolvedAskInput, params: AskRunParams) -> 
                 }
                 match ev {
                     ResponseEvent::Created => {
+                        log_line(&mut ask_log, "stream event: created");
                         if let Some(stdout) = stream_stdout.as_mut() {
                             emit_stream_event(
                                 stdout,
@@ -1082,6 +1077,10 @@ async fn run_ask(resolved_ask_input: ResolvedAskInput, params: AskRunParams) -> 
                     }
                     ResponseEvent::OutputTextDelta(delta) => {
                         output_text_delta_count += 1;
+                        log_line(
+                            &mut ask_log,
+                            format!("stream event: output_text_delta delta={delta:?}"),
+                        );
                         if let Some(stdout) = stream_stdout.as_mut() {
                             emit_stream_event(
                                 stdout,
@@ -1098,6 +1097,12 @@ async fn run_ask(resolved_ask_input: ResolvedAskInput, params: AskRunParams) -> 
                         summary_index,
                     } => {
                         reasoning_summary_delta_count += 1;
+                        log_line(
+                            &mut ask_log,
+                            format!(
+                                "stream event: reasoning_summary_delta summary_index={summary_index} delta={delta:?}"
+                            ),
+                        );
                         if let Some(stdout) = stream_stdout.as_mut() {
                             emit_stream_event(
                                 stdout,
@@ -1117,6 +1122,12 @@ async fn run_ask(resolved_ask_input: ResolvedAskInput, params: AskRunParams) -> 
                         content_index,
                     } => {
                         reasoning_content_delta_count += 1;
+                        log_line(
+                            &mut ask_log,
+                            format!(
+                                "stream event: reasoning_content_delta content_index={content_index} delta={delta:?}"
+                            ),
+                        );
                         if let Some(stdout) = stream_stdout.as_mut() {
                             emit_stream_event(
                                 stdout,
@@ -1133,6 +1144,12 @@ async fn run_ask(resolved_ask_input: ResolvedAskInput, params: AskRunParams) -> 
                     }
                     ResponseEvent::ReasoningSummaryPartAdded { summary_index } => {
                         reasoning_summary_part_added_count += 1;
+                        log_line(
+                            &mut ask_log,
+                            format!(
+                                "stream event: reasoning_summary_part_added summary_index={summary_index}"
+                            ),
+                        );
                         if let Some(stdout) = stream_stdout.as_mut() {
                             emit_stream_event(
                                 stdout,
@@ -1148,6 +1165,7 @@ async fn run_ask(resolved_ask_input: ResolvedAskInput, params: AskRunParams) -> 
                     }
                     ResponseEvent::OutputItemAdded(item) => {
                         output_item_added_count += 1;
+                        log_stream_event_payload(&mut ask_log, "output_item_added", &item);
                         if let Some(stdout) = stream_stdout.as_mut() {
                             emit_stream_event(
                                 stdout,
@@ -1161,6 +1179,7 @@ async fn run_ask(resolved_ask_input: ResolvedAskInput, params: AskRunParams) -> 
                     }
                     ResponseEvent::OutputItemDone(item) => {
                         output_item_done_count += 1;
+                        log_stream_event_payload(&mut ask_log, "output_item_done", &item);
                         if let Some(stdout) = stream_stdout.as_mut() {
                             emit_stream_event(
                                 stdout,
@@ -1189,6 +1208,16 @@ async fn run_ask(resolved_ask_input: ResolvedAskInput, params: AskRunParams) -> 
                     } => {
                         let response_id_for_log = response_id.clone();
                         let token_usage_for_log = token_usage.clone();
+                        let token_usage_summary = token_usage_for_log
+                            .as_ref()
+                            .map(|usage| format!("{usage:?}"))
+                            .unwrap_or_else(|| "none".to_string());
+                        log_line(
+                            &mut ask_log,
+                            format!(
+                                "stream event: completed response_id={response_id_for_log} token_usage={token_usage_summary}"
+                            ),
+                        );
                         if let Some(stdout) = stream_stdout.as_mut() {
                             emit_stream_event(
                                 stdout,
@@ -1206,10 +1235,6 @@ async fn run_ask(resolved_ask_input: ResolvedAskInput, params: AskRunParams) -> 
                         completed_response_id = Some(response_id_for_log.clone());
                         completed_token_usage = token_usage_for_log.clone();
                         let elapsed_ms = request_started.elapsed().as_millis();
-                        let token_usage_summary = token_usage_for_log
-                            .as_ref()
-                            .map(|usage| format!("{usage:?}"))
-                            .unwrap_or_else(|| "none".to_string());
                         log_line(
                             &mut ask_log,
                             format!(
@@ -1628,6 +1653,20 @@ fn log_line_raw(path: &Path, file: File, message: &str) -> Option<BufWriter<File
     Some(writer)
 }
 
+fn log_stream_event_payload<T: Serialize>(log: &mut Option<AskLog>, label: &str, payload: &T) {
+    match serde_json::to_string(payload) {
+        Ok(payload_json) => {
+            log_line(log, format!("stream event: {label} payload={payload_json}"));
+        }
+        Err(err) => {
+            log_line(
+                log,
+                format!("stream event: {label} payload_serialization_error={err}"),
+            );
+        }
+    }
+}
+
 fn log_timestamp() -> String {
     OffsetDateTime::now_utc()
         .format(&format_description!(
@@ -1671,7 +1710,7 @@ mod tests {
 
     #[test]
     fn ask_subcommand_parses_bundle_arg() {
-        let bundle = r#"{"payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]},"tools":{"tools":[{"type":"function","name":"get_project_directory","description":"Declares the UE5 project directory resolver. Codex only surfaces the tool; the UE plugin executes it.","parameters":{"type":"object","properties":{"project_dir":{"type":"string"}},"additionalProperties":false},"strict":false}]}}"#;
+        let bundle = r#"{"payloads":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}],"tools":{"tools":[{"type":"function","name":"get_project_directory","description":"Declares the UE5 project directory resolver. Codex only surfaces the tool; the UE plugin executes it.","parameters":{"type":"object","properties":{"project_dir":{"type":"string"}},"additionalProperties":false},"strict":false}]}}"#;
         let cli = MultitoolCli::try_parse_from([
             "blueprintlm-cli",
             "ask",
@@ -1759,7 +1798,7 @@ mod tests {
     #[test]
     fn resolve_ask_input_reads_from_stdin() {
         let mut stdin = Cursor::new(
-            r#"{"payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"from stdin"}]},"tools":[{"type":"function","name":"get_project_directory","description":"Declares the UE5 project directory resolver. Codex only surfaces the tool; the UE plugin executes it.","parameters":{"type":"object","properties":{"project_dir":{"type":"string"}},"additionalProperties":false},"strict":false}]}"#,
+            r#"{"payloads":[{"type":"message","role":"user","content":[{"type":"input_text","text":"from stdin"}]}],"tools":[{"type":"function","name":"get_project_directory","description":"Declares the UE5 project directory resolver. Codex only surfaces the tool; the UE plugin executes it.","parameters":{"type":"object","properties":{"project_dir":{"type":"string"}},"additionalProperties":false},"strict":false}]}"#,
         );
         let ResolvedAskInput {
             ask_input,
@@ -1768,16 +1807,16 @@ mod tests {
         assert_eq!(
             stdin_raw.as_deref(),
             Some(
-                r#"{"payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"from stdin"}]},"tools":[{"type":"function","name":"get_project_directory","description":"Declares the UE5 project directory resolver. Codex only surfaces the tool; the UE plugin executes it.","parameters":{"type":"object","properties":{"project_dir":{"type":"string"}},"additionalProperties":false},"strict":false}]}"#
+                r#"{"payloads":[{"type":"message","role":"user","content":[{"type":"input_text","text":"from stdin"}]}],"tools":[{"type":"function","name":"get_project_directory","description":"Declares the UE5 project directory resolver. Codex only surfaces the tool; the UE plugin executes it.","parameters":{"type":"object","properties":{"project_dir":{"type":"string"}},"additionalProperties":false},"strict":false}]}"#
             )
         );
         assert_eq!(
-            ask_input.payload,
-            serde_json::json!({
+            ask_input.payloads,
+            serde_json::json!([{
                 "type": "message",
                 "role": "user",
                 "content": [{"type": "input_text", "text": "from stdin"}]
-            })
+            }])
         );
         assert_eq!(
             ask_input.tools,
@@ -1805,13 +1844,13 @@ mod tests {
 
     #[test]
     fn resolve_ask_input_passthrough_inline() {
-        let bundle = r#"{"payload":{"foo":"bar"},"tools":{"tools":[{"type":"function","name":"get_project_directory","description":"Declares the UE5 project directory resolver. Codex only surfaces the tool; the UE plugin executes it.","parameters":{"type":"object","properties":{"project_dir":{"type":"string"}},"additionalProperties":false},"strict":false}]}}"#;
+        let bundle = r#"{"payloads":[{"foo":"bar"}],"tools":{"tools":[{"type":"function","name":"get_project_directory","description":"Declares the UE5 project directory resolver. Codex only surfaces the tool; the UE plugin executes it.","parameters":{"type":"object","properties":{"project_dir":{"type":"string"}},"additionalProperties":false},"strict":false}]}}"#;
         let ResolvedAskInput {
             ask_input,
             stdin_raw,
         } = resolve_ask_input(bundle.to_string(), &mut Cursor::new(Vec::new())).expect("ask input");
         assert!(stdin_raw.is_none());
-        assert_eq!(ask_input.payload, serde_json::json!({ "foo": "bar" }));
+        assert_eq!(ask_input.payloads, serde_json::json!([{ "foo": "bar" }]));
         assert_eq!(
             ask_input.tools,
             serde_json::json!({

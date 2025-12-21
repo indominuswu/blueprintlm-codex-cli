@@ -5,7 +5,7 @@ This file captures BlueprintLM-only behavior that needs to survive merges from u
 ## CLI surface (`codex-rs/blueprintlm-cli`)
 - Binary name stays `blueprintlm-cli` (crate at `codex-rs/blueprintlm-cli`); upstream `codex-rs/cli` should remain untouched.
 - All subcommands print JSON to stdout with a `success` flag and optional `error`; stderr is for warnings only.
-- `ask` is resume-only: it requires `--session-id` and consumes a single JSON object `{ "payload": ..., "tools": ... }` via arg or `-` (stdin). `payload` must parse into `ResponseInputItem` entries; `tools` must be function tools only (array or `{ "tools": [...] }`) or the command errors.
+- `ask` is resume-only: it requires `--session-id` and consumes a single JSON object `{ "payloads": [...], "tools": ... }` via arg or `-` (stdin). `payloads` must parse into `ResponseInputItem` entries; `tools` must be function tools only (array or `{ "tools": [...] }`) or the command errors.
 - Tools passed to `ask` are the entire prompt tool set (`blueprintlm_default_tool_specs_from_str`); there is no config-side lookup. Caller-provided tools must keep working.
 - `ask` appends rollout items to the existing session, logs to `$BLUEPRINTLM_HOME/log/YYYY/MM/DD/ask-*.log`, and respects `--add-dir`/`--cd` for workspace rooting.
 - Output schema is `{"success": bool, "error": Option<String>, "response": Vec<RolloutLine>}`; do not break this contract.

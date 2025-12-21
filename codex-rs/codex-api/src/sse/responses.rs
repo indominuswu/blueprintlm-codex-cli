@@ -22,6 +22,7 @@ use tokio::time::Instant;
 use tokio::time::timeout;
 use tokio_util::io::ReaderStream;
 use tracing::debug;
+use tracing::info;
 use tracing::trace;
 
 /// Streams SSE events from an on-disk fixture for tests.
@@ -177,18 +178,21 @@ pub async fn process_sse(
             }
         };
 
-        let raw = sse.data.clone();
+        let raw = sse.data;
         trace!("SSE event: {raw}");
 
-        let event: SseEvent = match serde_json::from_str(&sse.data) {
+        let event: SseEvent = match serde_json::from_str(&raw) {
             Ok(event) => event,
             Err(e) => {
-                debug!("Failed to parse SSE event: {e}, data: {}", &sse.data);
+                debug!("Failed to parse SSE event: {e}, data: {raw}");
                 continue;
             }
         };
 
-        match event.kind.as_str() {
+        let event_kind = event.kind.as_str();
+        info!(event_type = %event_kind, json = %raw, "API SSE JSON");
+
+        match event_kind {
             "response.output_item.done" => {
                 let Some(item_val) = event.item else { continue };
                 let Ok(item) = serde_json::from_value::<ResponseItem>(item_val) else {
