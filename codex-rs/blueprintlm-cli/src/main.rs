@@ -22,7 +22,7 @@ use codex_core::blueprintlm_default_tool_specs_from_str;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
 use codex_core::features::Feature;
-use codex_core::openai_models::models_manager::ModelsManager;
+use codex_core::models_manager::manager::ModelsManager;
 use codex_core::rollout::find_conversation_path_by_id_str;
 use codex_core::rollout::list::Cursor as SessionsCursor;
 use codex_core::rollout::list::get_conversations;
