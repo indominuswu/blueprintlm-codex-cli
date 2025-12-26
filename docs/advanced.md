@@ -25,7 +25,7 @@ See the Rust documentation on [`RUST_LOG`](https://docs.rs/env_logger/latest/env
 To inspect everything Codex recorded for an earlier session, print the rollout file as JSON:
 
 ```
-blueprintlm rollout-history --session-id <SESSION_ID>
+blueprintlm-codex rollout-history --session-id <SESSION_ID>
 ```
 
 The output includes `success`, `error`, `session_id`, `rollout_path`, and `history` (each entry is a `RolloutLine` with a timestamp and payload).

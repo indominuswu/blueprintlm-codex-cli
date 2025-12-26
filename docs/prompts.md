@@ -4,7 +4,7 @@ Custom prompts turn your repeatable instructions into reusable slash commands, s
 
 ### Where prompts live
 
-- Location: store prompts in `$BLUEPRINTLM_HOME/prompts/` (defaults to `~/.blueprintlm/prompts/`). Set `BLUEPRINTLM_HOME` if you want to use a different folder.
+- Location: store prompts in `$BLUEPRINTLM_HOME/prompts/` (defaults to `~/.blueprintlm-codex/prompts/`). Set `BLUEPRINTLM_HOME` if you want to use a different folder.
 - File type: Codex only loads `.md` files. Non-Markdown files are ignored. Both regular files and symlinks to Markdown files are supported.
 - Naming: The filename (without `.md`) becomes the prompt name. A file called `review.md` registers the prompt `review`.
 - Refresh: Prompts are loaded when a session starts. Restart Codex (or start a new session) after adding or editing files.

@@ -273,7 +273,7 @@ pub struct Config {
     /// Token budget applied when storing tool/function outputs in the context manager.
     pub tool_output_token_limit: Option<usize>,
 
-    /// Directory containing all Codex state (defaults to `~/.blueprintlm` but can be
+    /// Directory containing all Codex state (defaults to `~/.blueprintlm-codex` but can be
     /// overridden by the `BLUEPRINTLM_HOME` environment variable).
     pub codex_home: PathBuf,
 
@@ -1506,7 +1506,7 @@ fn default_review_model() -> String {
 
 /// Returns the path to the Codex configuration directory, which can be
 /// specified by the `BLUEPRINTLM_HOME` environment variable. If not set,
-/// defaults to `~/.blueprintlm`.
+/// defaults to `~/.blueprintlm-codex`.
 ///
 /// - If the env override is set, the value will be canonicalized and this
 ///   function will Err if the path does not exist.
@@ -1523,7 +1523,7 @@ pub fn find_codex_home() -> std::io::Result<PathBuf> {
             "Could not find home directory",
         )
     })?;
-    Ok(home.join(".blueprintlm"))
+    Ok(home.join(".blueprintlm-codex"))
 }
 
 /// Returns the path to the folder where Codex logs are stored. Does not verify

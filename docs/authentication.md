@@ -32,7 +32,7 @@ Today, the login process entails running a server on `localhost:1455`. If you ar
 
 ### Authenticate locally and copy your credentials to the "headless" machine
 
-The easiest solution is likely to run through the `codex login` process on your local machine such that `localhost:1455` _is_ accessible in your web browser. When you complete the authentication process, an `auth.json` file should be available at `$BLUEPRINTLM_HOME/auth.json` (on Mac/Linux, `$BLUEPRINTLM_HOME` defaults to `~/.blueprintlm` whereas on Windows, it defaults to `%USERPROFILE%\\.blueprintlm`).
+The easiest solution is likely to run through the `codex login` process on your local machine such that `localhost:1455` _is_ accessible in your web browser. When you complete the authentication process, an `auth.json` file should be available at `$BLUEPRINTLM_HOME/auth.json` (on Mac/Linux, `$BLUEPRINTLM_HOME` defaults to `~/.blueprintlm-codex` whereas on Windows, it defaults to `%USERPROFILE%\\.blueprintlm-codex`).
 
 Because the `auth.json` file is not tied to a specific host, once you complete the authentication flow locally, you can copy the `$BLUEPRINTLM_HOME/auth.json` file to the headless machine and then `codex` should "just work" on that machine. Note to copy a file to a Docker container, you can do:
 

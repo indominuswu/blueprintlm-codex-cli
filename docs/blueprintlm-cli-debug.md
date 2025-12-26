@@ -1,4 +1,4 @@
-# blueprintlm-cli debug flags
+# blueprintlm-codex debug flags
 
 Quick reference for debug-only CLI switches that help exercise error paths and capture prompt payloads. These flags are hidden from `--help` output and are intended for testing only.
 
@@ -13,7 +13,7 @@ Quick reference for debug-only CLI switches that help exercise error paths and c
 Usage example:
 
 ```
-blueprintlm ask "hello" --session-id <SESSION_UUID> --debug-stream-error quota_exceeded
+blueprintlm-codex ask "hello" --session-id <SESSION_UUID> --debug-stream-error quota_exceeded
 ```
 
 ## start-session
@@ -24,5 +24,5 @@ blueprintlm ask "hello" --session-id <SESSION_UUID> --debug-stream-error quota_e
 Usage example:
 
 ```
-blueprintlm start-session --debug-start-session-error io
+blueprintlm-codex start-session --debug-start-session-error io
 ```

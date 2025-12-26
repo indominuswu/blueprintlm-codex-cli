@@ -3,7 +3,7 @@
 This file captures BlueprintLM-only behavior that needs to survive merges from upstream `openai/codex`. Use it as a checklist whenever rebasing or cherry-picking from upstream.
 
 ## CLI surface (`codex-rs/blueprintlm-cli`)
-- Binary name stays `blueprintlm-cli` (crate at `codex-rs/blueprintlm-cli`); upstream `codex-rs/cli` should remain untouched.
+- Binary name is `blueprintlm-codex` (crate at `codex-rs/blueprintlm-cli`); upstream `codex-rs/cli` should remain untouched.
 - All subcommands print JSON to stdout with a `success` flag and optional `error`; stderr is for warnings only.
 - `ask` is resume-only: it requires `--session-id` and consumes a single JSON object `{ "payloads": [...], "tools": ... }` via arg or `-` (stdin). `payloads` must parse into `ResponseInputItem` entries; `tools` must be function tools only (array or `{ "tools": [...] }`) or the command errors.
 - Tools passed to `ask` are the entire prompt tool set (`blueprintlm_default_tool_specs_from_str`); there is no config-side lookup. Caller-provided tools must keep working.
@@ -21,10 +21,10 @@ This file captures BlueprintLM-only behavior that needs to survive merges from u
 
 ## Models
 - Built-in presets live in `codex-rs/core/src/openai_models/model_presets.rs`; `gpt-5.1-codex-max` is the default. Preserve the BlueprintLM codex family (`gpt-5.1-codex[-mini]`, `gpt-5-codex[-mini]`, `gpt-5.1`, `gpt-5`) and their upgrade mappings and reasoning effort options.
-- `blueprintlm-cli models` should continue printing the presets JSON (not a table).
+- `blueprintlm-codex models` should continue printing the presets JSON (not a table).
 
 ## Tooling expectations
-- Default Codex home is `$BLUEPRINTLM_HOME` (defaults to `~/.blueprintlm`/`%USERPROFILE%\\.blueprintlm`); logs, prompts, and rollouts live underneath.
+- Default Codex home is `$BLUEPRINTLM_HOME` (defaults to `~/.blueprintlm-codex`/`%USERPROFILE%\\.blueprintlm-codex`); logs, prompts, and rollouts live underneath.
 - UE5 tool set must remain available where tools are auto-built: `get_project_directory`, `get_project_context`, `list_directory`, `list_assets`, `open_asset_in_editor`, `get_blueprint_graph`, `compile_blueprint`, `query_log`, `execute_console_command`, plus model-specific base tools (`shell`/`shell_command`/`local_shell`, `apply_patch`, `view_image`, MCP helpers).
 - For CLI `ask`, only caller-supplied function tools are allowed; non-function or empty tool lists must stay an error.
 

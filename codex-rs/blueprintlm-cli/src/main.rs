@@ -67,9 +67,9 @@ use tracing::warn;
 #[clap(
     author,
     version,
-    bin_name = "blueprintlm-cli",
+    bin_name = "blueprintlm-codex",
     subcommand_required = true,
-    override_usage = "blueprintlm-cli <COMMAND> [ARGS]"
+    override_usage = "blueprintlm-codex <COMMAND> [ARGS]"
 )]
 struct MultitoolCli {
     #[clap(flatten)]
@@ -210,7 +210,7 @@ struct LoginCommand {
 
     #[arg(
         long = "with-api-key",
-        help = "Read the API key from stdin (e.g. `printenv OPENAI_API_KEY | blueprintlm-cli login --with-api-key`)"
+        help = "Read the API key from stdin (e.g. `printenv OPENAI_API_KEY | blueprintlm-codex login --with-api-key`)"
     )]
     with_api_key: bool,
 
@@ -375,7 +375,7 @@ async fn cli_main(_codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<(
                         .await;
                     } else if login_cli.api_key.is_some() {
                         eprintln!(
-                            "The --api-key flag is no longer supported. Pipe the key instead, e.g. `printenv OPENAI_API_KEY | blueprintlm-cli login --with-api-key`."
+                            "The --api-key flag is no longer supported. Pipe the key instead, e.g. `printenv OPENAI_API_KEY | blueprintlm-codex login --with-api-key`."
                         );
                         std::process::exit(1);
                     } else if login_cli.with_api_key {
@@ -1520,6 +1520,7 @@ async fn run_start_session(
             .await?;
     config.user_instructions = None;
     config.project_doc_override = Some(project_doc_override);
+    config.features.disable(Feature::Skills);
 
     let auth_manager = AuthManager::shared(
         config.codex_home.clone(),
@@ -1562,7 +1563,7 @@ async fn run_get_rate_limits(root_config_overrides: CliConfigOverrides) -> anyho
         config.cli_auth_credentials_store_mode,
     );
     let Some(auth) = auth_manager.auth() else {
-        anyhow::bail!("Not logged in; run `blueprintlm-cli login` first.");
+        anyhow::bail!("Not logged in; run `blueprintlm-codex login` first.");
     };
 
     let client = BackendClient::from_auth(config.chatgpt_base_url.clone(), &auth).await?;
@@ -1712,7 +1713,7 @@ mod tests {
     fn ask_subcommand_parses_bundle_arg() {
         let bundle = r#"{"payloads":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}],"tools":{"tools":[{"type":"function","name":"get_project_directory","description":"Declares the UE5 project directory resolver. Codex only surfaces the tool; the UE plugin executes it.","parameters":{"type":"object","properties":{"project_dir":{"type":"string"}},"additionalProperties":false},"strict":false}]}}"#;
         let cli = MultitoolCli::try_parse_from([
-            "blueprintlm-cli",
+            "blueprintlm-codex",
             "ask",
             "--session-id",
             "abc",
@@ -1747,7 +1748,7 @@ mod tests {
     #[test]
     fn validate_tools_subcommand_parses() {
         let cli =
-            MultitoolCli::try_parse_from(["blueprintlm-cli", "validate-tools", "--tools", "-"])
+            MultitoolCli::try_parse_from(["blueprintlm-codex", "validate-tools", "--tools", "-"])
                 .expect("parse");
         let Subcommand::ValidateTools(ValidateToolsCommand { tools }) = cli.subcommand else {
             unreachable!()
@@ -1757,14 +1758,14 @@ mod tests {
 
     #[test]
     fn models_subcommand_parses() {
-        let cli = MultitoolCli::try_parse_from(["blueprintlm-cli", "models"]).expect("parse");
+        let cli = MultitoolCli::try_parse_from(["blueprintlm-codex", "models"]).expect("parse");
         assert!(matches!(cli.subcommand, Subcommand::Models));
     }
 
     #[test]
     fn start_session_subcommand_parses() {
         let cli = MultitoolCli::try_parse_from([
-            "blueprintlm-cli",
+            "blueprintlm-codex",
             "start-session",
             "-C",
             "/tmp",
@@ -1872,7 +1873,7 @@ mod tests {
     #[test]
     fn rollout_history_subcommand_parses() {
         let cli = MultitoolCli::try_parse_from([
-            "blueprintlm-cli",
+            "blueprintlm-codex",
             "rollout-history",
             "--session-id",
             "abc",

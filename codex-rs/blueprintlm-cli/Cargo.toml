@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "blueprintlm"
+name = "blueprintlm-codex"
 path = "src/main.rs"
 
 [lib]
