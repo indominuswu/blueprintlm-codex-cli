@@ -100,11 +100,13 @@ impl<'de> serde::Deserialize<'de> for Cursor {
     }
 }
 
-/// Retrieve recorded conversation file paths with token pagination. The returned `next_cursor`
-/// can be supplied on the next call to resume after the last returned item, resilient to
-/// concurrent new sessions being appended. Ordering is stable by timestamp desc, then UUID desc.
-pub async fn get_conversations(
+/// Retrieve recorded conversation file paths under a Codex home subdirectory with token
+/// pagination. The returned `next_cursor` can be supplied on the next call to resume after the
+/// last returned item, resilient to concurrent new sessions being appended. Ordering is stable by
+/// timestamp desc, then UUID desc.
+pub async fn get_conversations_in_subdir(
     codex_home: &Path,
+    subdir: &str,
     page_size: usize,
     cursor: Option<&Cursor>,
     allowed_sources: &[SessionSource],
@@ -113,7 +115,7 @@ pub async fn get_conversations(
     project_id: Option<&str>,
 ) -> io::Result<ConversationsPage> {
     let mut root = codex_home.to_path_buf();
-    root.push(SESSIONS_SUBDIR);
+    root.push(subdir);
 
     if !root.exists() {
         return Ok(ConversationsPage {
@@ -141,9 +143,34 @@ pub async fn get_conversations(
     Ok(result)
 }
 
+/// Retrieve recorded conversation file paths with token pagination. The returned `next_cursor`
+/// can be supplied on the next call to resume after the last returned item, resilient to
+/// concurrent new sessions being appended. Ordering is stable by timestamp desc, then UUID desc.
+pub async fn get_conversations(
+    codex_home: &Path,
+    page_size: usize,
+    cursor: Option<&Cursor>,
+    allowed_sources: &[SessionSource],
+    model_providers: Option<&[String]>,
+    default_provider: &str,
+    project_id: Option<&str>,
+) -> io::Result<ConversationsPage> {
+    get_conversations_in_subdir(
+        codex_home,
+        SESSIONS_SUBDIR,
+        page_size,
+        cursor,
+        allowed_sources,
+        model_providers,
+        default_provider,
+        project_id,
+    )
+    .await
+}
+
 /// Load conversation file paths from disk using directory traversal.
 ///
-/// Directory layout: `~/.codex/sessions/YYYY/MM/DD/rollout-YYYY-MM-DDThh-mm-ss-<uuid>.jsonl`
+/// Directory layout: `<root>/YYYY/MM/DD/rollout-YYYY-MM-DDThh-mm-ss-<uuid>.jsonl`
 /// Returned newest (latest) first.
 async fn traverse_directories_for_paths(
     root: PathBuf,
@@ -475,8 +502,9 @@ async fn file_modified_rfc3339(path: &Path) -> io::Result<Option<String>> {
 /// Locate a recorded conversation rollout file by its UUID string using the existing
 /// paginated listing implementation. Returns `Ok(Some(path))` if found, `Ok(None)` if not present
 /// or the id is invalid.
-pub async fn find_conversation_path_by_id_str(
+pub async fn find_conversation_path_by_id_str_in_subdir(
     codex_home: &Path,
+    subdir: &str,
     id_str: &str,
 ) -> io::Result<Option<PathBuf>> {
     // Validate UUID format early.
@@ -485,7 +513,7 @@ pub async fn find_conversation_path_by_id_str(
     }
 
     let mut root = codex_home.to_path_buf();
-    root.push(SESSIONS_SUBDIR);
+    root.push(subdir);
     if !root.exists() {
         return Ok(None);
     }
@@ -516,4 +544,14 @@ pub async fn find_conversation_path_by_id_str(
         .into_iter()
         .next()
         .map(|m| root.join(m.path)))
+}
+
+/// Locate a recorded conversation rollout file by its UUID string using the default
+/// sessions directory. Returns `Ok(Some(path))` if found, `Ok(None)` if not present
+/// or the id is invalid.
+pub async fn find_conversation_path_by_id_str(
+    codex_home: &Path,
+    id_str: &str,
+) -> io::Result<Option<PathBuf>> {
+    find_conversation_path_by_id_str_in_subdir(codex_home, SESSIONS_SUBDIR, id_str).await
 }

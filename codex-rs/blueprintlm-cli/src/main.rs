@@ -23,9 +23,13 @@ use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
 use codex_core::features::Feature;
 use codex_core::models_manager::manager::ModelsManager;
+use codex_core::rollout::SESSIONS_SUBDIR;
+use codex_core::rollout::SUBAGENT_SESSIONS_SUBDIR;
 use codex_core::rollout::find_conversation_path_by_id_str;
 use codex_core::rollout::list::Cursor as SessionsCursor;
+use codex_core::rollout::list::find_conversation_path_by_id_str_in_subdir;
 use codex_core::rollout::list::get_conversations;
+use codex_core::rollout::list::get_conversations_in_subdir;
 use codex_core::rollout::recorder::RolloutRecorderParams;
 use codex_core::terminal;
 use codex_otel::otel_manager::OtelManager;
@@ -38,6 +42,7 @@ use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::RolloutLine;
 use codex_protocol::protocol::SessionConfiguredEvent;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::TokenUsage;
 use futures_util::StreamExt;
 use serde::Deserialize;
@@ -90,13 +95,25 @@ enum Subcommand {
     /// List recorded sessions as JSON.
     Sessions(SessionsCommand),
 
+    /// List recorded subagent sessions as JSON.
+    #[clap(name = "subagent-sessions")]
+    SubagentSessions(SubagentSessionsCommand),
+
     /// Fetch rollout history for a recorded session as JSON.
     #[clap(name = "rollout-history")]
     RolloutHistory(RolloutHistoryCommand),
 
+    /// Fetch rollout history for a recorded subagent session as JSON.
+    #[clap(name = "subagent-rollout-history")]
+    SubagentRolloutHistory(SubagentRolloutHistoryCommand),
+
     /// Start a session and print session metadata as JSON.
     #[clap(name = "start-session")]
     StartSession(StartSessionCommand),
+
+    /// Start a subagent session and print session metadata as JSON.
+    #[clap(name = "start-subagent-session")]
+    StartSubagentSession(StartSubagentSessionCommand),
 
     /// Manage login.
     Login(LoginCommand),
@@ -174,7 +191,33 @@ struct SessionsCommand {
 }
 
 #[derive(Debug, Parser)]
+struct SubagentSessionsCommand {
+    /// Page size (max conversations to return).
+    #[arg(long = "limit", default_value_t = 50)]
+    page_size: usize,
+
+    /// Pagination cursor returned from a previous call.
+    #[arg(long)]
+    cursor: Option<String>,
+
+    /// Filter by model provider (comma-separated). Defaults to all.
+    #[arg(long = "provider", value_delimiter = ',', value_name = "PROVIDER")]
+    providers: Vec<String>,
+
+    /// Filter by project id.
+    #[arg(long = "project-id", value_name = "PROJECT_ID")]
+    project_id: Option<String>,
+}
+
+#[derive(Debug, Parser)]
 struct RolloutHistoryCommand {
+    /// Session id to read history for.
+    #[arg(long = "session-id", value_name = "SESSION_ID")]
+    session_id: String,
+}
+
+#[derive(Debug, Parser)]
+struct SubagentRolloutHistoryCommand {
     /// Session id to read history for.
     #[arg(long = "session-id", value_name = "SESSION_ID")]
     session_id: String,
@@ -197,6 +240,37 @@ struct StartSessionCommand {
     /// Inline contents of AGENTS.md to use for this session (use '-' to read from stdin).
     #[arg(long = "project-doc", value_name = "AGENTS_MD", required = true)]
     project_doc: String,
+
+    /// Simulate a start-session failure for testing error handling.
+    #[arg(long = "debug-start-session-error", value_name = "KIND", hide = true)]
+    debug_start_session_error: Option<String>,
+}
+
+#[derive(Debug, Parser)]
+struct StartSubagentSessionCommand {
+    /// Additional directories that should be writable alongside the primary workspace.
+    #[arg(long = "add-dir", value_name = "DIR", value_hint = clap::ValueHint::DirPath)]
+    add_dir: Vec<PathBuf>,
+
+    /// Tell the agent to use the specified directory as its working root.
+    #[clap(long = "cd", short = 'C', value_name = "DIR")]
+    cwd: Option<PathBuf>,
+
+    /// Project identifier to record in session metadata.
+    #[arg(long = "project-id", value_name = "PROJECT_ID")]
+    project_id: String,
+
+    /// Inline contents of AGENTS.md to use for this session (use '-' to read from stdin).
+    #[arg(long = "project-doc", value_name = "AGENTS_MD", required = true)]
+    project_doc: String,
+
+    /// Label recorded as the subagent session source.
+    #[arg(
+        long = "subagent-label",
+        value_name = "LABEL",
+        default_value = "external"
+    )]
+    subagent_label: String,
 
     /// Simulate a start-session failure for testing error handling.
     #[arg(long = "debug-start-session-error", value_name = "KIND", hide = true)]
@@ -336,8 +410,52 @@ async fn cli_main(_codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<(
             let json = serde_json::to_string_pretty(&conversations)?;
             println!("{json}");
         }
+        Subcommand::SubagentSessions(SubagentSessionsCommand {
+            page_size,
+            cursor,
+            providers,
+            project_id,
+        }) => {
+            let cursor = if let Some(cursor) = cursor {
+                Some(
+                    serde_json::from_str::<SessionsCursor>(&format!("\"{cursor}\""))
+                        .context("invalid cursor")?,
+                )
+            } else {
+                None
+            };
+            let cli_overrides = root_config_overrides
+                .parse_overrides()
+                .map_err(anyhow::Error::msg)?;
+            let config = Config::load_with_cli_overrides_and_harness_overrides(
+                cli_overrides,
+                ConfigOverrides::default(),
+            )
+            .await?;
+            let provider_refs: Option<&[String]> = if providers.is_empty() {
+                None
+            } else {
+                Some(&providers)
+            };
+            let conversations = get_conversations_in_subdir(
+                &config.codex_home,
+                SUBAGENT_SESSIONS_SUBDIR,
+                page_size,
+                cursor.as_ref(),
+                &[],
+                provider_refs,
+                config.model_provider_id.as_str(),
+                project_id.as_deref(),
+            )
+            .await?;
+            let json = serde_json::to_string_pretty(&conversations)?;
+            println!("{json}");
+        }
         Subcommand::RolloutHistory(RolloutHistoryCommand { session_id }) => {
             run_rollout_history(session_id, root_config_overrides).await?;
+        }
+        Subcommand::SubagentRolloutHistory(SubagentRolloutHistoryCommand { session_id }) => {
+            run_subagent_rollout_history(session_id, root_config_overrides).await?;
         }
         Subcommand::StartSession(StartSessionCommand {
             add_dir,
@@ -351,6 +469,25 @@ async fn cli_main(_codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<(
                 cwd,
                 project_id,
                 project_doc,
+                debug_start_session_error,
+                root_config_overrides,
+            )
+            .await?;
+        }
+        Subcommand::StartSubagentSession(StartSubagentSessionCommand {
+            add_dir,
+            cwd,
+            project_id,
+            project_doc,
+            subagent_label,
+            debug_start_session_error,
+        }) => {
+            run_start_subagent_session(
+                add_dir,
+                cwd,
+                project_id,
+                project_doc,
+                subagent_label,
                 debug_start_session_error,
                 root_config_overrides,
             )
@@ -536,6 +673,19 @@ fn response_items_from_history(
     }
 }
 
+fn session_source_from_history(history: &InitialHistory) -> Option<SessionSource> {
+    let InitialHistory::Resumed(resumed) = history else {
+        return None;
+    };
+    resumed.history.iter().find_map(|item| {
+        if let RolloutItem::SessionMeta(meta_line) = item {
+            Some(meta_line.meta.source.clone())
+        } else {
+            None
+        }
+    })
+}
+
 fn emit_rollout_history_error(error: String) -> anyhow::Result<()> {
     let response = RolloutHistoryResponse {
         success: false,
@@ -584,6 +734,24 @@ fn read_full_rollout(path: &Path) -> io::Result<(Vec<RolloutLine>, ConversationI
     };
 
     Ok((history, conversation_id))
+}
+
+async fn find_rollout_path_for_session(
+    codex_home: &Path,
+    session_id: &str,
+) -> anyhow::Result<Option<PathBuf>> {
+    let path = find_conversation_path_by_id_str(codex_home, session_id).await?;
+    if path.is_some() {
+        return Ok(path);
+    }
+    Ok(
+        find_conversation_path_by_id_str_in_subdir(
+            codex_home,
+            SUBAGENT_SESSIONS_SUBDIR,
+            session_id,
+        )
+        .await?,
+    )
 }
 
 #[derive(Debug, Deserialize)]
@@ -697,8 +865,7 @@ async fn run_ask(resolved_ask_input: ResolvedAskInput, params: AskRunParams) -> 
             return Ok(());
         }
     };
-    let rollout_path = match find_conversation_path_by_id_str(&config.codex_home, &session_id).await
-    {
+    let rollout_path = match find_rollout_path_for_session(&config.codex_home, &session_id).await {
         Ok(Some(path)) => path,
         Ok(None) => {
             emit_error(
@@ -722,6 +889,8 @@ async fn run_ask(resolved_ask_input: ResolvedAskInput, params: AskRunParams) -> 
             return Ok(());
         }
     };
+    let session_source =
+        session_source_from_history(&initial_history).unwrap_or(SessionSource::Cli);
     let (resumed_id, mut history_items) = match response_items_from_history(&initial_history) {
         Ok((id, items)) => (id, items),
         Err(err) => {
@@ -800,7 +969,7 @@ async fn run_ask(resolved_ask_input: ResolvedAskInput, params: AskRunParams) -> 
         auth.as_ref().map(|a| a.mode),
         config.otel.log_user_prompt,
         terminal::user_agent(),
-        SessionSource::Cli,
+        session_source.clone(),
     );
     let provider = config.model_provider.clone();
     let provider_name = provider.name.clone();
@@ -836,7 +1005,7 @@ async fn run_ask(resolved_ask_input: ResolvedAskInput, params: AskRunParams) -> 
         config.model_reasoning_effort,
         config.model_reasoning_summary,
         conversation_id,
-        SessionSource::Cli,
+        session_source,
     );
 
     let payloads_json =
@@ -1415,6 +1584,21 @@ async fn run_rollout_history(
     session_id: String,
     root_config_overrides: CliConfigOverrides,
 ) -> anyhow::Result<()> {
+    run_rollout_history_in_subdir(session_id, root_config_overrides, SESSIONS_SUBDIR).await
+}
+
+async fn run_subagent_rollout_history(
+    session_id: String,
+    root_config_overrides: CliConfigOverrides,
+) -> anyhow::Result<()> {
+    run_rollout_history_in_subdir(session_id, root_config_overrides, SUBAGENT_SESSIONS_SUBDIR).await
+}
+
+async fn run_rollout_history_in_subdir(
+    session_id: String,
+    root_config_overrides: CliConfigOverrides,
+    subdir: &str,
+) -> anyhow::Result<()> {
     let cli_overrides = root_config_overrides
         .parse_overrides()
         .map_err(anyhow::Error::msg)?;
@@ -1432,18 +1616,20 @@ async fn run_rollout_history(
         }
     };
 
-    let rollout_path = match find_conversation_path_by_id_str(&config.codex_home, &session_id).await
-    {
-        Ok(Some(path)) => path,
-        Ok(None) => {
-            emit_rollout_history_error(format!("Session with id {session_id} not found"))?;
-            return Ok(());
-        }
-        Err(err) => {
-            emit_rollout_history_error(format!("Failed to locate session: {err}"))?;
-            return Ok(());
-        }
-    };
+    let rollout_path =
+        match find_conversation_path_by_id_str_in_subdir(&config.codex_home, subdir, &session_id)
+            .await
+        {
+            Ok(Some(path)) => path,
+            Ok(None) => {
+                emit_rollout_history_error(format!("Session with id {session_id} not found"))?;
+                return Ok(());
+            }
+            Err(err) => {
+                emit_rollout_history_error(format!("Failed to locate session: {err}"))?;
+                return Ok(());
+            }
+        };
 
     let (history, parsed_id) = match read_full_rollout(&rollout_path) {
         Ok(result) => result,
@@ -1479,6 +1665,48 @@ async fn run_start_session(
     project_doc: String,
     debug_start_session_error: Option<String>,
     root_config_overrides: CliConfigOverrides,
+) -> anyhow::Result<()> {
+    run_start_session_with_source(
+        add_dir,
+        cwd,
+        project_id,
+        project_doc,
+        debug_start_session_error,
+        root_config_overrides,
+        SessionSource::Cli,
+    )
+    .await
+}
+
+async fn run_start_subagent_session(
+    add_dir: Vec<PathBuf>,
+    cwd: Option<PathBuf>,
+    project_id: String,
+    project_doc: String,
+    subagent_label: String,
+    debug_start_session_error: Option<String>,
+    root_config_overrides: CliConfigOverrides,
+) -> anyhow::Result<()> {
+    run_start_session_with_source(
+        add_dir,
+        cwd,
+        project_id,
+        project_doc,
+        debug_start_session_error,
+        root_config_overrides,
+        SessionSource::SubAgent(SubAgentSource::Other(subagent_label)),
+    )
+    .await
+}
+
+async fn run_start_session_with_source(
+    add_dir: Vec<PathBuf>,
+    cwd: Option<PathBuf>,
+    project_id: String,
+    project_doc: String,
+    debug_start_session_error: Option<String>,
+    root_config_overrides: CliConfigOverrides,
+    session_source: SessionSource,
 ) -> anyhow::Result<()> {
     if let Some(kind) = debug_start_session_error
         && kind == "io"
@@ -1527,7 +1755,7 @@ async fn run_start_session(
         true,
         config.cli_auth_credentials_store_mode,
     );
-    let conversation_manager = ConversationManager::new(auth_manager, SessionSource::Cli);
+    let conversation_manager = ConversationManager::new(auth_manager, session_source);
     let response = match conversation_manager.new_conversation(config).await {
         Ok(new_conversation) => StartSessionResponse {
             success: true,
@@ -1797,6 +2025,44 @@ mod tests {
     }
 
     #[test]
+    fn start_subagent_session_subcommand_parses() {
+        let cli = MultitoolCli::try_parse_from([
+            "blueprintlm-codex",
+            "start-subagent-session",
+            "-C",
+            "/tmp",
+            "--add-dir",
+            "/tmp/foo",
+            "--project-id",
+            "proj123",
+            "--project-doc",
+            "agents text",
+            "--subagent-label",
+            "ue-plugin",
+            "--debug-start-session-error",
+            "io",
+        ])
+        .expect("parse");
+        let Subcommand::StartSubagentSession(StartSubagentSessionCommand {
+            add_dir,
+            cwd,
+            project_id,
+            project_doc,
+            subagent_label,
+            debug_start_session_error,
+        }) = cli.subcommand
+        else {
+            unreachable!()
+        };
+        assert_eq!(add_dir, vec![std::path::PathBuf::from("/tmp/foo")]);
+        assert_eq!(cwd.as_deref(), Some(std::path::Path::new("/tmp")));
+        assert_eq!(project_id, "proj123");
+        assert_eq!(project_doc, "agents text");
+        assert_eq!(subagent_label, "ue-plugin");
+        assert_eq!(debug_start_session_error.as_deref(), Some("io"));
+    }
+
+    #[test]
     fn resolve_ask_input_reads_from_stdin() {
         let mut stdin = Cursor::new(
             r#"{"payloads":[{"type":"message","role":"user","content":[{"type":"input_text","text":"from stdin"}]}],"tools":[{"type":"function","name":"get_project_directory","description":"Declares the UE5 project directory resolver. Codex only surfaces the tool; the UE plugin executes it.","parameters":{"type":"object","properties":{"project_dir":{"type":"string"}},"additionalProperties":false},"strict":false}]}"#,
@@ -1884,6 +2150,56 @@ mod tests {
             unreachable!()
         };
         assert_eq!(session_id.as_str(), "abc");
+    }
+
+    #[test]
+    fn subagent_rollout_history_subcommand_parses() {
+        let cli = MultitoolCli::try_parse_from([
+            "blueprintlm-codex",
+            "subagent-rollout-history",
+            "--session-id",
+            "abc",
+        ])
+        .expect("parse");
+        let Subcommand::SubagentRolloutHistory(SubagentRolloutHistoryCommand { session_id }) =
+            cli.subcommand
+        else {
+            unreachable!()
+        };
+        assert_eq!(session_id.as_str(), "abc");
+    }
+
+    #[test]
+    fn subagent_sessions_subcommand_parses() {
+        let cli = MultitoolCli::try_parse_from([
+            "blueprintlm-codex",
+            "subagent-sessions",
+            "--limit",
+            "25",
+            "--cursor",
+            "2025-01-02T12-00-00|00000000-0000-0000-0000-000000000001",
+            "--provider",
+            "test",
+            "--project-id",
+            "proj123",
+        ])
+        .expect("parse");
+        let Subcommand::SubagentSessions(SubagentSessionsCommand {
+            page_size,
+            cursor,
+            providers,
+            project_id,
+        }) = cli.subcommand
+        else {
+            unreachable!()
+        };
+        assert_eq!(page_size, 25);
+        assert_eq!(
+            cursor.as_deref(),
+            Some("2025-01-02T12-00-00|00000000-0000-0000-0000-000000000001")
+        );
+        assert_eq!(providers, vec!["test".to_string()]);
+        assert_eq!(project_id.as_deref(), Some("proj123"));
     }
 
     #[test]

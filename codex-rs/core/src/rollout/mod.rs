@@ -3,9 +3,17 @@
 use codex_protocol::protocol::SessionSource;
 
 pub const SESSIONS_SUBDIR: &str = "sessions";
+pub const SUBAGENT_SESSIONS_SUBDIR: &str = "subagent_sessions";
 pub const ARCHIVED_SESSIONS_SUBDIR: &str = "archived_sessions";
 pub const INTERACTIVE_SESSION_SOURCES: &[SessionSource] =
     &[SessionSource::Cli, SessionSource::VSCode];
+
+pub(crate) fn sessions_subdir_for_source(source: &SessionSource) -> &'static str {
+    match source {
+        SessionSource::SubAgent(_) => SUBAGENT_SESSIONS_SUBDIR,
+        _ => SESSIONS_SUBDIR,
+    }
+}
 
 pub(crate) mod error;
 pub mod list;

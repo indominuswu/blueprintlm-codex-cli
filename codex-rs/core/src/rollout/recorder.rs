@@ -18,11 +18,11 @@ use tokio::sync::oneshot;
 use tracing::info;
 use tracing::warn;
 
-use super::SESSIONS_SUBDIR;
 use super::list::ConversationsPage;
 use super::list::Cursor;
 use super::list::get_conversations;
 use super::policy::is_persisted_response_item;
+use super::sessions_subdir_for_source;
 use crate::config::Config;
 use crate::default_client::originator;
 use crate::git_info::collect_git_info;
@@ -37,7 +37,8 @@ use codex_protocol::protocol::SessionSource;
 /// Records all [`ResponseItem`]s for a session and flushes them to disk after
 /// every update.
 ///
-/// Rollouts are recorded as JSONL and can be inspected with tools such as:
+/// Rollouts are recorded as JSONL under `sessions/` or `subagent_sessions/` and can be inspected
+/// with tools such as:
 ///
 /// ```ignore
 /// $ jq -C . ~/.codex/sessions/rollout-2025-05-07T17-24-21-5973b6c0-94b8-487b-a530-2aeb6098ae0e.jsonl
@@ -128,7 +129,7 @@ impl RolloutRecorder {
                     path,
                     conversation_id: session_id,
                     timestamp,
-                } = create_log_file(config, conversation_id)?;
+                } = create_log_file(config, conversation_id, &source)?;
 
                 let timestamp_format: &[FormatItem] = format_description!(
                     "[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]Z"
@@ -319,12 +320,13 @@ struct LogFileInfo {
 fn create_log_file(
     config: &Config,
     conversation_id: ConversationId,
+    source: &SessionSource,
 ) -> std::io::Result<LogFileInfo> {
     // Resolve ~/.codex/sessions/YYYY/MM/DD and create it if missing.
     let timestamp = OffsetDateTime::now_local()
         .map_err(|e| IoError::other(format!("failed to get local time: {e}")))?;
     let mut dir = config.codex_home.clone();
-    dir.push(SESSIONS_SUBDIR);
+    dir.push(sessions_subdir_for_source(source));
     dir.push(timestamp.year().to_string());
     dir.push(format!("{:02}", u8::from(timestamp.month())));
     dir.push(format!("{:02}", timestamp.day()));

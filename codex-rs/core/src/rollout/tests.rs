@@ -13,10 +13,13 @@ use time::macros::format_description;
 use uuid::Uuid;
 
 use crate::rollout::INTERACTIVE_SESSION_SOURCES;
+use crate::rollout::SESSIONS_SUBDIR;
+use crate::rollout::SUBAGENT_SESSIONS_SUBDIR;
 use crate::rollout::list::ConversationItem;
 use crate::rollout::list::ConversationsPage;
 use crate::rollout::list::Cursor;
 use crate::rollout::list::get_conversations;
+use crate::rollout::list::get_conversations_in_subdir;
 use anyhow::Result;
 use codex_protocol::ConversationId;
 use codex_protocol::models::ContentItem;
@@ -28,6 +31,7 @@ use codex_protocol::protocol::SessionMeta;
 use codex_protocol::protocol::SessionMetaLine;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::UserMessageEvent;
+use pretty_assertions::assert_eq;
 
 const NO_SOURCE_FILTER: &[SessionSource] = &[];
 const TEST_PROVIDER: &str = "test-provider";
@@ -66,13 +70,35 @@ fn write_session_file_with_provider(
     model_provider: Option<&str>,
     project_id: Option<&str>,
 ) -> std::io::Result<(OffsetDateTime, Uuid)> {
+    write_session_file_in_subdir(
+        root,
+        SESSIONS_SUBDIR,
+        ts_str,
+        uuid,
+        num_records,
+        source,
+        model_provider,
+        project_id,
+    )
+}
+
+fn write_session_file_in_subdir(
+    root: &Path,
+    subdir: &str,
+    ts_str: &str,
+    uuid: Uuid,
+    num_records: usize,
+    source: Option<SessionSource>,
+    model_provider: Option<&str>,
+    project_id: Option<&str>,
+) -> std::io::Result<(OffsetDateTime, Uuid)> {
     let format: &[FormatItem] =
         format_description!("[year]-[month]-[day]T[hour]-[minute]-[second]");
     let dt = PrimitiveDateTime::parse(ts_str, format)
         .unwrap()
         .assume_utc();
     let dir = root
-        .join("sessions")
+        .join(subdir)
         .join(format!("{:04}", dt.year()))
         .join(format!("{:02}", u8::from(dt.month())))
         .join(format!("{:02}", dt.day()));
@@ -256,6 +282,109 @@ async fn test_list_conversations_latest_first() {
         ],
         next_cursor: None,
         num_scanned_files: 3,
+        reached_scan_cap: false,
+    };
+
+    assert_eq!(page, expected);
+}
+
+#[tokio::test]
+async fn test_list_conversations_from_subagent_dir() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path();
+
+    let u1 = Uuid::from_u128(10);
+    let u2 = Uuid::from_u128(20);
+
+    write_session_file_in_subdir(
+        home,
+        SUBAGENT_SESSIONS_SUBDIR,
+        "2025-02-01T12-00-00",
+        u1,
+        2,
+        None,
+        Some(TEST_PROVIDER),
+        None,
+    )
+    .unwrap();
+    write_session_file_in_subdir(
+        home,
+        SUBAGENT_SESSIONS_SUBDIR,
+        "2025-02-02T12-00-00",
+        u2,
+        2,
+        None,
+        Some(TEST_PROVIDER),
+        None,
+    )
+    .unwrap();
+
+    let provider_filter = provider_vec(&[TEST_PROVIDER]);
+    let page = get_conversations_in_subdir(
+        home,
+        SUBAGENT_SESSIONS_SUBDIR,
+        10,
+        None,
+        NO_SOURCE_FILTER,
+        Some(provider_filter.as_slice()),
+        TEST_PROVIDER,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let p2 = home
+        .join(SUBAGENT_SESSIONS_SUBDIR)
+        .join("2025")
+        .join("02")
+        .join("02")
+        .join(format!("rollout-2025-02-02T12-00-00-{u2}.jsonl"));
+    let p1 = home
+        .join(SUBAGENT_SESSIONS_SUBDIR)
+        .join("2025")
+        .join("02")
+        .join("01")
+        .join(format!("rollout-2025-02-01T12-00-00-{u1}.jsonl"));
+
+    let head_2 = vec![serde_json::json!( {
+        "id": u2,
+        "timestamp": "2025-02-02T12-00-00",
+        "instructions": null,
+        "cwd": ".",
+        "originator": "test_originator",
+        "cli_version": "test_version",
+        "model_provider": "test-provider",
+    })];
+    let head_1 = vec![serde_json::json!( {
+        "id": u1,
+        "timestamp": "2025-02-01T12-00-00",
+        "instructions": null,
+        "cwd": ".",
+        "originator": "test_originator",
+        "cli_version": "test_version",
+        "model_provider": "test-provider",
+    })];
+
+    let updated_times: Vec<Option<String>> =
+        page.items.iter().map(|i| i.updated_at.clone()).collect();
+
+    let expected = ConversationsPage {
+        items: vec![
+            ConversationItem {
+                path: p2,
+                head: head_2,
+                created_at: Some("2025-02-02T12-00-00".into()),
+                updated_at: updated_times.first().cloned().flatten(),
+            },
+            ConversationItem {
+                path: p1,
+                head: head_1,
+                created_at: Some("2025-02-01T12-00-00".into()),
+                updated_at: updated_times.get(1).cloned().flatten(),
+            },
+        ],
+        next_cursor: None,
+        num_scanned_files: 2,
         reached_scan_cap: false,
     };
 
