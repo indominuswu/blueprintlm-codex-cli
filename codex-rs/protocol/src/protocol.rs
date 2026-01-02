@@ -574,6 +574,9 @@ pub enum EventMsg {
     /// Ack the client's configure message.
     SessionConfigured(SessionConfiguredEvent),
 
+    /// Notification that a subagent session has been created for this parent session.
+    SubagentSessionStarted(SubagentSessionStartedEvent),
+
     /// Incremental MCP startup progress updates.
     McpStartupUpdate(McpStartupUpdateEvent),
 
@@ -1812,6 +1815,12 @@ pub struct SessionConfiguredEvent {
     pub initial_messages: Option<Vec<EventMsg>>,
 
     pub rollout_path: PathBuf,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
+pub struct SubagentSessionStartedEvent {
+    pub subagent_session_id: ConversationId,
+    pub subagent_name: String,
 }
 
 /// User's decision in response to an ExecApprovalRequest.

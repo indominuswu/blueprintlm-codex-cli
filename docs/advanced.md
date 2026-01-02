@@ -30,6 +30,12 @@ blueprintlm-codex rollout-history --session-id <SESSION_ID>
 
 The output includes `success`, `error`, `session_id`, `rollout_path`, and `history` (each entry is a `RolloutLine` with a timestamp and payload).
 
+To append a subagent session marker to a parent session's rollout file, use:
+
+```
+blueprintlm-codex rollout-add-subagent-session --session-id <PARENT_SESSION_ID> --session-kind main --subagent-session-id <SUBAGENT_SESSION_ID> --subagent-name <SUBAGENT_NAME>
+```
+
 ## Model Context Protocol (MCP)
 
 The Codex CLI and IDE extension is a MCP client which means that it can be configured to connect to MCP servers. For more information, refer to the [`config docs`](./config.md#mcp-integration).
