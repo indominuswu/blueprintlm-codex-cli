@@ -166,6 +166,7 @@ impl ModelClient {
             "unexpected_status" => CodexErr::UnexpectedStatus(UnexpectedResponseError {
                 status: StatusCode::BAD_REQUEST,
                 body: "debug unexpected status".to_string(),
+                url: None,
                 request_id: Some("debug-request-id".to_string()),
             }),
             "retry_limit" => CodexErr::RetryLimit(RetryLimitReachedError {

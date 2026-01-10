@@ -1865,7 +1865,7 @@ pub struct SessionConfiguredEvent {
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct SubagentSessionStartedEvent {
-    pub subagent_session_id: ConversationId,
+    pub subagent_session_id: ThreadId,
     pub subagent_name: String,
 }
 

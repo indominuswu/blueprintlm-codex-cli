@@ -762,6 +762,7 @@ dependencies = [
  "codex-login",
  "codex-otel",
  "codex-protocol",
+ "codex-utils-cargo-bin",
  "futures-util",
  "pretty_assertions",
  "ratatui",
