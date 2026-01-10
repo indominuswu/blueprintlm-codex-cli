@@ -856,8 +856,8 @@ async fn run_ask(resolved_ask_input: ResolvedAskInput, params: AskRunParams) -> 
         emit_error("model not configured".to_string(), !stream_output)?;
         return Ok(());
     };
-    let model_family = models_manager.construct_model_family(model, &config).await;
-    let model_family_for_client = model_family.clone();
+    let model_info = models_manager.construct_model_info(model, &config).await;
+    let model_info_for_client = model_info.clone();
     let conversation_id = match ConversationId::from_string(&session_id) {
         Ok(id) => id,
         Err(err) => {
@@ -963,7 +963,7 @@ async fn run_ask(resolved_ask_input: ResolvedAskInput, params: AskRunParams) -> 
     let otel_event_manager = OtelManager::new(
         conversation_id,
         model,
-        model_family.slug.as_str(),
+        model_info.slug.as_str(),
         auth.as_ref().and_then(CodexAuth::get_account_id),
         auth.as_ref().and_then(CodexAuth::get_account_email),
         auth.as_ref().map(|a| a.mode),
@@ -979,10 +979,10 @@ async fn run_ask(resolved_ask_input: ResolvedAskInput, params: AskRunParams) -> 
         .unwrap_or_else(|| "default".to_string());
     let provider_wire = provider.wire_api;
     let provider_stream_idle_timeout_ms = provider.stream_idle_timeout().as_millis();
-    let model_family_slug = model_family.slug.as_str();
+    let model_info_slug = model_info.slug.as_str();
     log_line(
         &mut ask_log,
-        format!("model: {model} (family: {model_family_slug})"),
+        format!("model: {model} (family: {model_info_slug})"),
     );
     log_line(
         &mut ask_log,
@@ -999,7 +999,7 @@ async fn run_ask(resolved_ask_input: ResolvedAskInput, params: AskRunParams) -> 
     let client = ModelClient::new(
         Arc::new(config.clone()),
         Some(auth_manager),
-        model_family_for_client,
+        model_info_for_client,
         otel_event_manager,
         provider,
         config.model_reasoning_effort,
@@ -1057,7 +1057,7 @@ async fn run_ask(resolved_ask_input: ResolvedAskInput, params: AskRunParams) -> 
     }
 
     let tools_config = ToolsConfig::new(&ToolsConfigParams {
-        model_family: &model_family,
+        model_info: &model_info,
         features: &config.features,
     });
     let tools = match blueprintlm_default_tool_specs_from_str(&tools_config, &tools_json) {
@@ -1071,7 +1071,7 @@ async fn run_ask(resolved_ask_input: ResolvedAskInput, params: AskRunParams) -> 
         }
     };
     let tool_count = tools.len();
-    let parallel_tool_calls = model_family.supports_parallel_tool_calls
+    let parallel_tool_calls = model_info.supports_parallel_tool_calls
         && config.features.enabled(Feature::ParallelToolCalls);
     prompt.set_tools(tools);
     prompt.set_parallel_tool_calls(parallel_tool_calls);
@@ -1103,7 +1103,7 @@ async fn run_ask(resolved_ask_input: ResolvedAskInput, params: AskRunParams) -> 
             } else {
                 let payload = serde_json::json!({
                     "input": prompt.get_formatted_input(),
-                    "instructions": prompt.get_full_instructions(&model_family),
+                    "instructions": prompt.get_full_instructions(&model_info),
                     "tools": prompt.tools().to_vec(),
                     "parallel_tool_calls": prompt.parallel_tool_calls(),
                 });
@@ -1551,9 +1551,9 @@ async fn run_validate_tools(
         println!("{json}");
         return Ok(());
     };
-    let model_family = models_manager.construct_model_family(model, &config).await;
+    let model_info = models_manager.construct_model_info(model, &config).await;
     let tools_config = ToolsConfig::new(&ToolsConfigParams {
-        model_family: &model_family,
+        model_info: &model_info,
         features: &config.features,
     });
     let tool_count = match blueprintlm_default_tool_specs_from_str(&tools_config, &tools_json) {

@@ -1,8 +1,8 @@
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
 use codex_common::CliConfigOverrides;
-use codex_core::config::Config;
-use codex_core::config::ConfigOverrides;
+use codex_core::config::ConfigBuilder;
+use codex_core::config_loader::LoaderOverrides;
 use std::io::ErrorKind;
 use std::io::Result as IoResult;
 use std::path::PathBuf;
@@ -18,13 +18,11 @@ use tokio::io::BufReader;
 use tokio::io::{self};
 use tokio::sync::mpsc;
 use toml::Value as TomlValue;
-use tracing::Level;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::Layer;
-use tracing_subscriber::filter::Targets;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
@@ -45,6 +43,7 @@ const CHANNEL_CAPACITY: usize = 128;
 pub async fn run_main(
     codex_linux_sandbox_exe: Option<PathBuf>,
     cli_config_overrides: CliConfigOverrides,
+    loader_overrides: LoaderOverrides,
 ) -> IoResult<()> {
     // Set up channels.
     let (incoming_tx, mut incoming_rx) = mpsc::channel::<JSONRPCMessage>(CHANNEL_CAPACITY);
@@ -81,24 +80,30 @@ pub async fn run_main(
             format!("error parsing -c overrides: {e}"),
         )
     })?;
-    let config = Config::load_with_cli_overrides_and_harness_overrides(
-        cli_kv_overrides.clone(),
-        ConfigOverrides::default(),
-    )
-    .await
-    .map_err(|e| {
-        std::io::Error::new(ErrorKind::InvalidData, format!("error loading config: {e}"))
-    })?;
+    let loader_overrides_for_config_api = loader_overrides.clone();
+    let config = ConfigBuilder::default()
+        .cli_overrides(cli_kv_overrides.clone())
+        .loader_overrides(loader_overrides)
+        .build()
+        .await
+        .map_err(|e| {
+            std::io::Error::new(ErrorKind::InvalidData, format!("error loading config: {e}"))
+        })?;
 
     let feedback = CodexFeedback::new();
 
-    let otel =
-        codex_core::otel_init::build_provider(&config, env!("CARGO_PKG_VERSION")).map_err(|e| {
-            std::io::Error::new(
-                ErrorKind::InvalidData,
-                format!("error loading otel config: {e}"),
-            )
-        })?;
+    let otel = codex_core::otel_init::build_provider(
+        &config,
+        env!("CARGO_PKG_VERSION"),
+        Some("codex_app_server"),
+        false,
+    )
+    .map_err(|e| {
+        std::io::Error::new(
+            ErrorKind::InvalidData,
+            format!("error loading otel config: {e}"),
+        )
+    })?;
 
     // Install a simple subscriber so `tracing` output is visible.  Users can
     // control the log level with `RUST_LOG`.
@@ -107,11 +112,8 @@ pub async fn run_main(
         .with_span_events(tracing_subscriber::fmt::format::FmtSpan::FULL)
         .with_filter(EnvFilter::from_default_env());
 
-    let feedback_layer = tracing_subscriber::fmt::layer()
-        .with_writer(feedback.make_writer())
-        .with_ansi(false)
-        .with_target(false)
-        .with_filter(Targets::new().with_default(Level::TRACE));
+    let feedback_layer = feedback.logger_layer();
+    let feedback_metadata_layer = feedback.metadata_layer();
 
     let otel_logger_layer = otel.as_ref().and_then(|o| o.logger_layer());
 
@@ -120,6 +122,7 @@ pub async fn run_main(
     let _ = tracing_subscriber::registry()
         .with(stderr_fmt)
         .with(feedback_layer)
+        .with(feedback_metadata_layer)
         .with(otel_logger_layer)
         .with(otel_tracing_layer)
         .try_init();
@@ -128,11 +131,13 @@ pub async fn run_main(
     let processor_handle = tokio::spawn({
         let outgoing_message_sender = OutgoingMessageSender::new(outgoing_tx);
         let cli_overrides: Vec<(String, TomlValue)> = cli_kv_overrides.clone();
+        let loader_overrides = loader_overrides_for_config_api;
         let mut processor = MessageProcessor::new(
             outgoing_message_sender,
             codex_linux_sandbox_exe,
             std::sync::Arc::new(config),
             cli_overrides,
+            loader_overrides,
             feedback.clone(),
         );
         async move {

@@ -1,8 +1,10 @@
-# AGENTS.md Discovery
+# AGENTS.md
 
-Codex uses [`AGENTS.md`](https://agents.md/) files to gather helpful guidance before it starts assisting you. This page explains how those files are discovered and combined, so you can decide where to place your instructions.
+For information about AGENTS.md, see [this documentation](https://developers.openai.com/codex/guides/agents-md).
 
-## Global Instructions (`~/.codex`)
+## Hierarchical agents message
+
+When the `hierarchical_agents` feature flag is enabled (via `[features]` in `$BLUEPRINTLM_HOME/config.toml`), Codex appends additional guidance about AGENTS.md scope and precedence to the user instructions message and emits that message even when no AGENTS.md is present.
 
 - Codex looks for global guidance in your Codex home directory (usually `~/.blueprintlm-codex`; set `BLUEPRINTLM_HOME` to change it). For a quick overview, see the [Memory with AGENTS.md section](../docs/getting-started.md#memory-with-agentsmd) in the getting started guide.
 - If an `AGENTS.override.md` file exists there, it takes priority. If not, Codex falls back to `AGENTS.md`.

@@ -1,5 +1,7 @@
 # Authentication
 
+For information about Codex CLI authentication, see [this documentation](https://developers.openai.com/codex/auth).
+
 ## Usage-based billing alternative: Use an OpenAI API key
 
 If you prefer to pay-as-you-go, you can still authenticate with your OpenAI API key:

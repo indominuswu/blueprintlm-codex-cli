@@ -19,9 +19,11 @@ use codex_core::config::ConfigOverrides;
 use codex_core::config::find_codex_home;
 use codex_core::config::load_config_as_toml_with_cli_overrides;
 use codex_core::config::resolve_oss_provider;
-use codex_core::find_conversation_path_by_id_str;
+use codex_core::find_thread_path_by_id_str;
 use codex_core::get_platform_sandbox;
 use codex_core::protocol::AskForApproval;
+use codex_core::terminal::Multiplexer;
+use codex_protocol::config_types::AltScreenMode;
 use codex_protocol::config_types::SandboxMode;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use std::fs::OpenOptions;
@@ -29,7 +31,6 @@ use std::path::PathBuf;
 use tracing::error;
 use tracing_appender::non_blocking;
 use tracing_subscriber::EnvFilter;
-use tracing_subscriber::filter::Targets;
 use tracing_subscriber::prelude::*;
 
 mod additional_dirs;
@@ -78,10 +79,14 @@ mod terminal_palette;
 mod text_formatting;
 mod tooltips;
 mod transcript_copy;
+mod transcript_copy_action;
 mod transcript_copy_ui;
 mod transcript_multi_click;
 mod transcript_render;
+mod transcript_scrollbar;
+mod transcript_scrollbar_ui;
 mod transcript_selection;
+mod transcript_view_cache;
 mod tui;
 mod ui_consts;
 pub mod update_action;
@@ -247,7 +252,7 @@ pub async fn run_main(
     }
 
     #[allow(clippy::print_stderr)]
-    if let Err(err) = enforce_login_restrictions(&config).await {
+    if let Err(err) = enforce_login_restrictions(&config) {
         eprintln!("{err}");
         std::process::exit(1);
     }
@@ -292,13 +297,8 @@ pub async fn run_main(
         .with_filter(env_filter());
 
     let feedback = codex_feedback::CodexFeedback::new();
-    let targets = Targets::new().with_default(tracing::Level::TRACE);
-
-    let feedback_layer = tracing_subscriber::fmt::layer()
-        .with_writer(feedback.make_writer())
-        .with_ansi(false)
-        .with_target(false)
-        .with_filter(targets);
+    let feedback_layer = feedback.logger_layer();
+    let feedback_metadata_layer = feedback.metadata_layer();
 
     if cli.oss && model_provider_override.is_some() {
         // We're in the oss section, so provider_id should be Some
@@ -315,7 +315,8 @@ pub async fn run_main(
         ensure_oss_provider_ready(provider_id, &config).await?;
     }
 
-    let otel = codex_core::otel_init::build_provider(&config, env!("CARGO_PKG_VERSION"));
+    let otel =
+        codex_core::otel_init::build_provider(&config, env!("CARGO_PKG_VERSION"), None, true);
 
     #[allow(clippy::print_stderr)]
     let otel = match otel {
@@ -333,6 +334,7 @@ pub async fn run_main(
     let _ = tracing_subscriber::registry()
         .with(file_layer)
         .with(feedback_layer)
+        .with(feedback_metadata_layer)
         .with(otel_tracing_layer)
         .with(otel_logger_layer)
         .try_init();
@@ -361,6 +363,8 @@ async fn run_ratatui_app(
     feedback: codex_feedback::CodexFeedback,
 ) -> color_eyre::Result<AppExitInfo> {
     color_eyre::install()?;
+
+    tooltips::announcement::prewarm();
 
     // Forward panic reports through tracing so they appear in the UI status
     // line, but do not swallow the default/color-eyre panic handler.
@@ -449,7 +453,7 @@ async fn run_ratatui_app(
 
     // Determine resume behavior: explicit id, then resume last, then picker.
     let resume_selection = if let Some(id_str) = cli.resume_session_id.as_deref() {
-        match find_conversation_path_by_id_str(&config.codex_home, id_str).await? {
+        match find_thread_path_by_id_str(&config.codex_home, id_str).await? {
             Some(path) => resume_picker::ResumeSelection::Resume(path),
             None => {
                 error!("Error finding conversation path: {id_str}");
@@ -472,7 +476,7 @@ async fn run_ratatui_app(
         }
     } else if cli.resume_last {
         let provider_filter = vec![config.model_provider_id.clone()];
-        match RolloutRecorder::list_conversations(
+        match RolloutRecorder::list_threads(
             &config.codex_home,
             1,
             None,
@@ -514,12 +518,39 @@ async fn run_ratatui_app(
         resume_picker::ResumeSelection::StartFresh
     };
 
-    let Cli { prompt, images, .. } = cli;
+    let Cli {
+        prompt,
+        images,
+        no_alt_screen,
+        ..
+    } = cli;
 
     // Run the main chat + transcript UI on the terminal's alternate screen so
     // the entire viewport can be used without polluting normal scrollback. This
     // mirrors the behavior of the legacy TUI but keeps inline mode available
     // for smaller prompts like onboarding and model migration.
+    //
+    // However, alternate screen prevents scrollback in terminal multiplexers like
+    // Zellij that strictly follow the xterm spec (which disallows scrollback in
+    // alternate screen buffers). This auto-detects the terminal and disables
+    // alternate screen in Zellij while keeping it enabled elsewhere.
+    let use_alt_screen = if no_alt_screen {
+        // CLI flag explicitly disables alternate screen
+        false
+    } else {
+        match config.tui_alternate_screen {
+            AltScreenMode::Always => true,
+            AltScreenMode::Never => false,
+            AltScreenMode::Auto => {
+                // Auto-detect: disable in Zellij, enable elsewhere
+                let terminal_info = codex_core::terminal::terminal_info();
+                !matches!(terminal_info.multiplexer, Some(Multiplexer::Zellij { .. }))
+            }
+        }
+    };
+
+    // Set flag on Tui so all enter_alt_screen() calls respect the setting
+    tui.set_alt_screen_enabled(use_alt_screen);
     let _ = tui.enter_alt_screen();
 
     let app_result = App::run(

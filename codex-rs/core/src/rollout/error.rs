@@ -38,9 +38,9 @@ fn map_rollout_io_error(io_err: &std::io::Error, codex_home: &Path) -> Option<Co
             subagent_sessions_dir.display()
         ),
         ErrorKind::InvalidData | ErrorKind::InvalidInput => format!(
-            "Session data under {} or {} looks corrupt or unreadable. Clearing the sessions directories may help (this will remove saved conversations).",
-            sessions_dir.display(),
-            subagent_sessions_dir.display()
+            "Session data under {sessions_dir_display} or {subagent_sessions_dir_display} looks corrupt or unreadable. Clearing the sessions directories may help (this will remove saved threads).",
+            sessions_dir_display = sessions_dir.display(),
+            subagent_sessions_dir_display = subagent_sessions_dir.display()
         ),
         ErrorKind::IsADirectory | ErrorKind::NotADirectory => format!(
             "Session storage path {} or {} has an unexpected type. Ensure it is a directory Codex can use for session files.",

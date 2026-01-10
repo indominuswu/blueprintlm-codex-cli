@@ -1,19 +1,18 @@
-# Config
+# Configuration
 
-Codex configuration gives you fine-grained control over the model, execution environment, and integrations available to the CLI. Use this guide alongside the workflows in [`codex exec`](./exec.md), the guardrails in [Sandbox & approvals](./sandbox.md), and project guidance from [AGENTS.md discovery](./agents_md.md).
+For basic configuration instructions, see [this documentation](https://developers.openai.com/codex/config-basic).
 
-## Quick navigation
+For advanced configuration instructions, see [this documentation](https://developers.openai.com/codex/config-advanced).
 
-- [Feature flags](#feature-flags)
-- [Model selection](#model-selection)
-- [Execution environment](#execution-environment)
-- [Project root detection](#project-root-detection)
-- [MCP integration](#mcp-integration)
-- [Observability and telemetry](#observability-and-telemetry)
-- [Profiles and overrides](#profiles-and-overrides)
-- [Reference table](#config-reference)
+For a full configuration reference, see [this documentation](https://developers.openai.com/codex/config-reference).
 
-Codex supports several mechanisms for setting config values:
+## Connecting to MCP servers
+
+Codex can connect to MCP servers configured in `$BLUEPRINTLM_HOME/config.toml`. See the configuration reference for the latest MCP server options:
+
+- https://developers.openai.com/codex/config-reference
+
+MCP settings follow the same configuration precedence as other options:
 
 - Config-specific command-line flags, such as `--model o3` (highest precedence).
 - A generic `-c`/`--config` flag that takes a `key=value` pair, such as `--config model="o3"`.
@@ -26,7 +25,11 @@ Codex supports several mechanisms for setting config values:
     - Because quotes are interpreted by one's shell, `-c key="true"` will be correctly interpreted in TOML as `key = true` (a boolean) and not `key = "true"` (a string). If for some reason you needed the string `"true"`, you would need to use `-c key='"true"'` (note the two sets of quotes).
 - The `$BLUEPRINTLM_HOME/config.toml` configuration file where the `BLUEPRINTLM_HOME` environment value defaults to `~/.blueprintlm-codex`. (Note `BLUEPRINTLM_HOME` will also be where logs and other Codex-related information are stored.)
 
-Both the `--config` flag and the `config.toml` file support the following options:
+## Notify
+
+Codex can run a notification hook when the agent finishes a turn. See the configuration reference for the latest notification settings:
+
+- https://developers.openai.com/codex/config-reference
 
 ## Feature flags
 

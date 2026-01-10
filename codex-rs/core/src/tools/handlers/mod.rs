@@ -1,4 +1,5 @@
 pub mod apply_patch;
+pub(crate) mod collab;
 mod grep_files;
 mod list_dir;
 mod mcp;
@@ -12,8 +13,11 @@ mod unified_exec;
 mod view_image;
 
 pub use plan::PLAN_TOOL;
+use serde::Deserialize;
 
+use crate::function_tool::FunctionCallError;
 pub use apply_patch::ApplyPatchHandler;
+pub use collab::CollabHandler;
 pub use grep_files::GrepFilesHandler;
 pub use list_dir::ListDirHandler;
 pub use mcp::McpHandler;
@@ -34,3 +38,12 @@ pub use ue5::OpenAssetInEditorHandler;
 pub use ue5::QueryLogHandler;
 pub use unified_exec::UnifiedExecHandler;
 pub use view_image::ViewImageHandler;
+
+fn parse_arguments<T>(arguments: &str) -> Result<T, FunctionCallError>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    serde_json::from_str(arguments).map_err(|err| {
+        FunctionCallError::RespondToModel(format!("failed to parse function arguments: {err}"))
+    })
+}

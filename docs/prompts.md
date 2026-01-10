@@ -1,4 +1,6 @@
-## Custom Prompts
+# Custom prompts
+
+For an overview of custom prompts, see [this documentation](https://developers.openai.com/codex/custom-prompts).
 
 Custom prompts turn your repeatable instructions into reusable slash commands, so you can trigger them without retyping or copy/pasting. Each prompt is a Markdown file that Codex expands into the conversation the moment you run it.
 
