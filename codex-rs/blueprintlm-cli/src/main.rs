@@ -1,5 +1,6 @@
 use anyhow::Context;
 use clap::Parser;
+use clap::ValueEnum;
 use codex_arg0::arg0_dispatch_or_else;
 use codex_backend_client::Client as BackendClient;
 use codex_cli::login::read_api_key_from_stdin;
@@ -36,6 +37,7 @@ use codex_otel::otel_manager::OtelManager;
 use codex_protocol::ConversationId;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::RateLimitSnapshot;
 use codex_protocol::protocol::RolloutItem;
@@ -43,6 +45,7 @@ use codex_protocol::protocol::RolloutLine;
 use codex_protocol::protocol::SessionConfiguredEvent;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
+use codex_protocol::protocol::SubagentSessionStartedEvent;
 use codex_protocol::protocol::TokenUsage;
 use futures_util::StreamExt;
 use serde::Deserialize;
@@ -106,6 +109,10 @@ enum Subcommand {
     /// Fetch rollout history for a recorded subagent session as JSON.
     #[clap(name = "subagent-rollout-history")]
     SubagentRolloutHistory(SubagentRolloutHistoryCommand),
+
+    /// Record a subagent session event in a rollout file.
+    #[clap(name = "rollout-add-subagent-session")]
+    RolloutAddSubagentSession(RolloutAddSubagentSessionCommand),
 
     /// Start a session and print session metadata as JSON.
     #[clap(name = "start-session")]
@@ -221,6 +228,31 @@ struct SubagentRolloutHistoryCommand {
     /// Session id to read history for.
     #[arg(long = "session-id", value_name = "SESSION_ID")]
     session_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum SessionKind {
+    Main,
+    Subagent,
+}
+
+#[derive(Debug, Parser)]
+struct RolloutAddSubagentSessionCommand {
+    /// Session id to record the event under.
+    #[arg(long = "session-id", value_name = "SESSION_ID")]
+    session_id: String,
+
+    /// Which session directory to write into (main or subagent).
+    #[arg(long = "session-kind", value_enum)]
+    session_kind: SessionKind,
+
+    /// Subagent session id to record.
+    #[arg(long = "subagent-session-id", value_name = "SUBAGENT_SESSION_ID")]
+    subagent_session_id: String,
+
+    /// Subagent name to record.
+    #[arg(long = "subagent-name", value_name = "SUBAGENT_NAME")]
+    subagent_name: String,
 }
 
 #[derive(Debug, Parser)]
@@ -457,6 +489,21 @@ async fn cli_main(_codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<(
         Subcommand::SubagentRolloutHistory(SubagentRolloutHistoryCommand { session_id }) => {
             run_subagent_rollout_history(session_id, root_config_overrides).await?;
         }
+        Subcommand::RolloutAddSubagentSession(RolloutAddSubagentSessionCommand {
+            session_id,
+            session_kind,
+            subagent_session_id,
+            subagent_name,
+        }) => {
+            run_rollout_add_subagent_session(
+                session_id,
+                session_kind,
+                subagent_session_id,
+                subagent_name,
+                root_config_overrides,
+            )
+            .await?;
+        }
         Subcommand::StartSession(StartSessionCommand {
             add_dir,
             cwd,
@@ -624,6 +671,16 @@ struct RolloutHistoryResponse {
     history: Vec<RolloutLine>,
 }
 
+#[derive(Serialize)]
+struct RolloutAddSubagentSessionResponse {
+    success: bool,
+    error: Option<String>,
+    session_id: Option<String>,
+    rollout_path: Option<String>,
+    subagent_session_id: Option<String>,
+    subagent_name: Option<String>,
+}
+
 fn emit_error(error: String, pretty: bool) -> anyhow::Result<()> {
     let response = AskResponse {
         success: false,
@@ -693,6 +750,20 @@ fn emit_rollout_history_error(error: String) -> anyhow::Result<()> {
         session_id: None,
         rollout_path: None,
         history: Vec::new(),
+    };
+    let json = serde_json::to_string_pretty(&response)?;
+    println!("{json}");
+    Ok(())
+}
+
+fn emit_rollout_add_subagent_session_error(error: String) -> anyhow::Result<()> {
+    let response = RolloutAddSubagentSessionResponse {
+        success: false,
+        error: Some(error),
+        session_id: None,
+        rollout_path: None,
+        subagent_session_id: None,
+        subagent_name: None,
     };
     let json = serde_json::to_string_pretty(&response)?;
     println!("{json}");
@@ -1594,6 +1665,129 @@ async fn run_subagent_rollout_history(
     run_rollout_history_in_subdir(session_id, root_config_overrides, SUBAGENT_SESSIONS_SUBDIR).await
 }
 
+async fn run_rollout_add_subagent_session(
+    session_id: String,
+    session_kind: SessionKind,
+    subagent_session_id: String,
+    subagent_name: String,
+    root_config_overrides: CliConfigOverrides,
+) -> anyhow::Result<()> {
+    let cli_overrides = root_config_overrides
+        .parse_overrides()
+        .map_err(anyhow::Error::msg)?;
+    let config = Config::load_with_cli_overrides_and_harness_overrides(
+        cli_overrides,
+        ConfigOverrides::default(),
+    )
+    .await?;
+
+    let conversation_id = match ConversationId::from_string(&session_id) {
+        Ok(id) => id,
+        Err(err) => {
+            emit_rollout_add_subagent_session_error(err.to_string())?;
+            return Ok(());
+        }
+    };
+
+    let subagent_id = match ConversationId::from_string(&subagent_session_id) {
+        Ok(id) => id,
+        Err(err) => {
+            emit_rollout_add_subagent_session_error(err.to_string())?;
+            return Ok(());
+        }
+    };
+
+    let subdir = match session_kind {
+        SessionKind::Main => SESSIONS_SUBDIR,
+        SessionKind::Subagent => SUBAGENT_SESSIONS_SUBDIR,
+    };
+    let rollout_path =
+        match find_conversation_path_by_id_str_in_subdir(&config.codex_home, subdir, &session_id)
+            .await
+        {
+            Ok(Some(path)) => path,
+            Ok(None) => {
+                emit_rollout_add_subagent_session_error(format!(
+                    "Session with id {session_id} not found in {subdir}"
+                ))?;
+                return Ok(());
+            }
+            Err(err) => {
+                emit_rollout_add_subagent_session_error(format!(
+                    "Failed to locate session: {err}"
+                ))?;
+                return Ok(());
+            }
+        };
+
+    let (_, parsed_id) = match read_full_rollout(&rollout_path) {
+        Ok(result) => result,
+        Err(err) => {
+            emit_rollout_add_subagent_session_error(format!(
+                "Failed to read rollout history: {err}"
+            ))?;
+            return Ok(());
+        }
+    };
+
+    if parsed_id != conversation_id {
+        emit_rollout_add_subagent_session_error(
+            "Session id mismatch between provided id and rollout history".to_string(),
+        )?;
+        return Ok(());
+    }
+
+    let rollout_recorder =
+        match RolloutRecorder::new(&config, RolloutRecorderParams::resume(rollout_path.clone()))
+            .await
+        {
+            Ok(recorder) => recorder,
+            Err(err) => {
+                emit_rollout_add_subagent_session_error(format!(
+                    "Failed to open rollout recorder: {err}"
+                ))?;
+                return Ok(());
+            }
+        };
+
+    let event = EventMsg::SubagentSessionStarted(SubagentSessionStartedEvent {
+        subagent_session_id: subagent_id,
+        subagent_name: subagent_name.clone(),
+    });
+
+    if let Err(err) = rollout_recorder
+        .append_items(&[RolloutItem::EventMsg(event)])
+        .await
+    {
+        emit_rollout_add_subagent_session_error(format!("Failed to write rollout event: {err}"))?;
+        return Ok(());
+    }
+
+    if let Err(err) = rollout_recorder.flush().await {
+        emit_rollout_add_subagent_session_error(format!("Failed to flush rollout event: {err}"))?;
+        return Ok(());
+    }
+
+    if let Err(err) = rollout_recorder.shutdown().await {
+        emit_rollout_add_subagent_session_error(format!(
+            "Failed to shutdown rollout recorder: {err}"
+        ))?;
+        return Ok(());
+    }
+
+    let response = RolloutAddSubagentSessionResponse {
+        success: true,
+        error: None,
+        session_id: Some(conversation_id.to_string()),
+        rollout_path: Some(rollout_path.to_string_lossy().into_owned()),
+        subagent_session_id: Some(subagent_id.to_string()),
+        subagent_name: Some(subagent_name),
+    };
+    let json = serde_json::to_string_pretty(&response)?;
+    println!("{json}");
+    Ok(())
+}
+
 async fn run_rollout_history_in_subdir(
     session_id: String,
     root_config_overrides: CliConfigOverrides,
@@ -2167,6 +2361,36 @@ mod tests {
             unreachable!()
         };
         assert_eq!(session_id.as_str(), "abc");
+    }
+
+    #[test]
+    fn rollout_add_subagent_session_subcommand_parses() {
+        let cli = MultitoolCli::try_parse_from([
+            "blueprintlm-codex",
+            "rollout-add-subagent-session",
+            "--session-id",
+            "parent",
+            "--session-kind",
+            "main",
+            "--subagent-session-id",
+            "subagent",
+            "--subagent-name",
+            "external-subagent",
+        ])
+        .expect("parse");
+        let Subcommand::RolloutAddSubagentSession(RolloutAddSubagentSessionCommand {
+            session_id,
+            session_kind,
+            subagent_session_id,
+            subagent_name,
+        }) = cli.subcommand
+        else {
+            unreachable!()
+        };
+        assert_eq!(session_id, "parent");
+        assert_eq!(session_kind, SessionKind::Main);
+        assert_eq!(subagent_session_id, "subagent");
+        assert_eq!(subagent_name, "external-subagent");
     }
 
     #[test]

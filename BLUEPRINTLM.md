@@ -36,6 +36,11 @@ from upstream `openai/codex`. This is the single source of truth.
   `{"success": bool, "error": Option<String>, "tool_count": usize}`.
 - JSON-only commands must stay JSON-only: `sessions`, `rollout-history`,
   `subagent-sessions`, `subagent-rollout-history`, `models`, `get-rate-limits`.
+- `rollout-add-subagent-session` records a subagent session event for a parent
+  rollout. It writes `SubagentSessionStarted` with `--session-id`,
+  `--session-kind` (main or subagent), `--subagent-session-id`, and
+  `--subagent-name`, and returns JSON with `success`, `error`, `session_id`,
+  `rollout_path`, `subagent_session_id`, and `subagent_name`.
 
 ## Session lifecycle
 - `start-session` requires `--project-id` and `--project-doc` (AGENTS.md).

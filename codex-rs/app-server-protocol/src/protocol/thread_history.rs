@@ -56,6 +56,7 @@ impl ThreadHistoryBuilder {
                 self.handle_agent_reasoning_raw_content(payload)
             }
             EventMsg::TokenCount(_) => {}
+            EventMsg::SubagentSessionStarted(_) => {}
             EventMsg::EnteredReviewMode(_) => {}
             EventMsg::ExitedReviewMode(_) => {}
             EventMsg::ThreadRolledBack(payload) => self.handle_thread_rollback(payload),
