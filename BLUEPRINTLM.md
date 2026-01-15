@@ -42,6 +42,10 @@ from upstream `openai/codex`. This is the single source of truth.
   `--subagent-name`, and optional `--call-id`, and returns JSON with `success`,
   `error`, `session_id`, `rollout_path`, `subagent_session_id`,
   `subagent_name`, and `call_id`.
+- `rollout-add-tool-items` appends `function_call` and `function_call_output`
+  items to a rollout file. It requires `--session-id`, `--session-kind` (main
+  or subagent), and `--items` (JSON array/object of response items), and returns
+  JSON with `success`, `error`, `session_id`, `rollout_path`, and `item_count`.
 
 ## Session lifecycle
 - `start-session` requires `--project-id` and `--project-doc` (AGENTS.md).

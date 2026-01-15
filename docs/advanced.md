@@ -36,6 +36,14 @@ To append a subagent session marker to a parent session's rollout file, use:
 blueprintlm-codex rollout-add-subagent-session --session-id <PARENT_SESSION_ID> --session-kind main --subagent-session-id <SUBAGENT_SESSION_ID> --subagent-name <SUBAGENT_NAME> --call-id <CALL_ID>
 ```
 
+To inject function_call/function_call_output items into a rollout file, use:
+
+```
+blueprintlm-codex rollout-add-tool-items --session-id <SESSION_ID> --session-kind main --items '[{"type":"function_call","call_id":"call-1","name":"shell_command","arguments":"{\"command\":\"ls\"}"},{"type":"function_call_output","call_id":"call-1","output":"{\"stdout\":\"...\"}"}]'
+```
+
+`--items` accepts a single object or an array; pass `-` to read JSON from stdin.
+
 ## Model Context Protocol (MCP)
 
 The Codex CLI and IDE extension is a MCP client which means that it can be configured to connect to MCP servers. For more information, refer to the [`config docs`](./config.md#mcp-integration).

@@ -9,6 +9,7 @@ const COMMANDS: &[&str] = &[
     "subagent-sessions",
     "subagent-rollout-history",
     "rollout-add-subagent-session",
+    "rollout-add-tool-items",
     "start-subagent-session",
     "get-rate-limits",
     "models",

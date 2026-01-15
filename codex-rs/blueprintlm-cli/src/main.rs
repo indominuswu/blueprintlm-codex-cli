@@ -112,6 +112,10 @@ enum Subcommand {
     #[clap(name = "rollout-add-subagent-session")]
     RolloutAddSubagentSession(RolloutAddSubagentSessionCommand),
 
+    /// Append function_call and function_call_output items to a rollout file.
+    #[clap(name = "rollout-add-tool-items")]
+    RolloutAddToolItems(RolloutAddToolItemsCommand),
+
     /// Start a session and print session metadata as JSON.
     #[clap(name = "start-session")]
     StartSession(StartSessionCommand),
@@ -255,6 +259,21 @@ struct RolloutAddSubagentSessionCommand {
     /// Tool call id that initiated the subagent session.
     #[arg(long = "call-id", value_name = "CALL_ID")]
     call_id: Option<String>,
+}
+
+#[derive(Debug, Parser)]
+struct RolloutAddToolItemsCommand {
+    /// Session id to record the event under.
+    #[arg(long = "session-id", value_name = "SESSION_ID")]
+    session_id: String,
+
+    /// Which session directory to write into (main or subagent).
+    #[arg(long = "session-kind", value_enum)]
+    session_kind: SessionKind,
+
+    /// JSON array/object of function_call/function_call_output items (use '-' to read from stdin).
+    #[arg(long = "items", value_name = "ITEMS_JSON", required = true)]
+    items: String,
 }
 
 #[derive(Debug, Parser)]
@@ -508,6 +527,15 @@ async fn cli_main(_codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<(
             )
             .await?;
         }
+        Subcommand::RolloutAddToolItems(RolloutAddToolItemsCommand {
+            session_id,
+            session_kind,
+            items,
+        }) => {
+            let items_json = resolve_rollout_items_input(items, &mut std::io::stdin().lock())?;
+            run_rollout_add_tool_items(session_id, session_kind, items_json, root_config_overrides)
+                .await?;
+        }
         Subcommand::StartSession(StartSessionCommand {
             add_dir,
             cwd,
@@ -686,6 +714,15 @@ struct RolloutAddSubagentSessionResponse {
     call_id: Option<String>,
 }
 
+#[derive(Serialize)]
+struct RolloutAddToolItemsResponse {
+    success: bool,
+    error: Option<String>,
+    session_id: Option<String>,
+    rollout_path: Option<String>,
+    item_count: usize,
+}
+
 fn emit_error(error: String, pretty: bool) -> anyhow::Result<()> {
     let response = AskResponse {
         success: false,
@@ -770,6 +807,19 @@ fn emit_rollout_add_subagent_session_error(error: String) -> anyhow::Result<()> 
         subagent_session_id: None,
         subagent_name: None,
         call_id: None,
+    };
+    let json = serde_json::to_string_pretty(&response)?;
+    println!("{json}");
+    Ok(())
+}
+
+fn emit_rollout_add_tool_items_error(error: String) -> anyhow::Result<()> {
+    let response = RolloutAddToolItemsResponse {
+        success: false,
+        error: Some(error),
+        session_id: None,
+        rollout_path: None,
+        item_count: 0,
     };
     let json = serde_json::to_string_pretty(&response)?;
     println!("{json}");
@@ -888,6 +938,67 @@ fn resolve_tools_input(input: String, mut reader: impl Read) -> anyhow::Result<S
         anyhow::bail!("stdin tools input must not be empty");
     }
     Ok(buf)
+}
+
+fn resolve_rollout_items_input(input: String, mut reader: impl Read) -> anyhow::Result<String> {
+    if input != "-" {
+        return Ok(input);
+    }
+
+    let mut buf = String::new();
+    reader.read_to_string(&mut buf)?;
+    if buf.trim().is_empty() {
+        anyhow::bail!("stdin items input must not be empty");
+    }
+    Ok(buf)
+}
+
+fn response_item_kind(item: &ResponseItem) -> &'static str {
+    match item {
+        ResponseItem::Message { .. } => "message",
+        ResponseItem::Reasoning { .. } => "reasoning",
+        ResponseItem::LocalShellCall { .. } => "local_shell_call",
+        ResponseItem::FunctionCall { .. } => "function_call",
+        ResponseItem::FunctionCallOutput { .. } => "function_call_output",
+        ResponseItem::CustomToolCall { .. } => "custom_tool_call",
+        ResponseItem::CustomToolCallOutput { .. } => "custom_tool_call_output",
+        ResponseItem::WebSearchCall { .. } => "web_search_call",
+        ResponseItem::GhostSnapshot { .. } => "ghost_snapshot",
+        ResponseItem::Compaction { .. } => "compaction",
+        ResponseItem::Other => "other",
+    }
+}
+
+fn parse_rollout_tool_items(raw: &str) -> anyhow::Result<Vec<ResponseItem>> {
+    let items = match serde_json::from_str::<Vec<ResponseItem>>(raw) {
+        Ok(items) => items,
+        Err(array_err) => match serde_json::from_str::<ResponseItem>(raw) {
+            Ok(item) => vec![item],
+            Err(single_err) => {
+                anyhow::bail!(
+                    "invalid rollout items JSON; expected array or object: array error={array_err}; object error={single_err}"
+                );
+            }
+        },
+    };
+
+    if items.is_empty() {
+        anyhow::bail!("rollout items must not be empty");
+    }
+
+    for (index, item) in items.iter().enumerate() {
+        if !matches!(
+            item,
+            ResponseItem::FunctionCall { .. } | ResponseItem::FunctionCallOutput { .. }
+        ) {
+            let kind = response_item_kind(item);
+            anyhow::bail!(
+                "unsupported rollout item at index {index}: {kind}; expected function_call or function_call_output"
+            );
+        }
+    }
+
+    Ok(items)
 }
 
 async fn run_ask(resolved_ask_input: ResolvedAskInput, params: AskRunParams) -> anyhow::Result<()> {
@@ -1479,7 +1590,7 @@ async fn run_ask(resolved_ask_input: ResolvedAskInput, params: AskRunParams) -> 
                         }
                         saw_completed = true;
                         completed_response_id = Some(response_id_for_log.clone());
-                        completed_token_usage = token_usage_for_log.clone();
+                        completed_token_usage = token_usage_for_log;
                         let elapsed_ms = request_started.elapsed().as_millis();
                         log_line(
                             &mut ask_log,
@@ -1794,6 +1905,115 @@ async fn run_rollout_add_subagent_session(
         subagent_session_id: Some(subagent_id.to_string()),
         subagent_name: Some(subagent_name),
         call_id,
+    };
+    let json = serde_json::to_string_pretty(&response)?;
+    println!("{json}");
+    Ok(())
+}
+
+async fn run_rollout_add_tool_items(
+    session_id: String,
+    session_kind: SessionKind,
+    items_json: String,
+    root_config_overrides: CliConfigOverrides,
+) -> anyhow::Result<()> {
+    let items = match parse_rollout_tool_items(&items_json) {
+        Ok(items) => items,
+        Err(err) => {
+            emit_rollout_add_tool_items_error(err.to_string())?;
+            return Ok(());
+        }
+    };
+
+    let cli_overrides = root_config_overrides
+        .parse_overrides()
+        .map_err(anyhow::Error::msg)?;
+    let config = Config::load_with_cli_overrides_and_harness_overrides(
+        cli_overrides,
+        ConfigOverrides::default(),
+    )
+    .await?;
+
+    let conversation_id = match ThreadId::from_string(&session_id) {
+        Ok(id) => id,
+        Err(err) => {
+            emit_rollout_add_tool_items_error(err.to_string())?;
+            return Ok(());
+        }
+    };
+
+    let subdir = match session_kind {
+        SessionKind::Main => SESSIONS_SUBDIR,
+        SessionKind::Subagent => SUBAGENT_SESSIONS_SUBDIR,
+    };
+    let rollout_path =
+        match find_conversation_path_by_id_str_in_subdir(&config.codex_home, subdir, &session_id)
+            .await
+        {
+            Ok(Some(path)) => path,
+            Ok(None) => {
+                emit_rollout_add_tool_items_error(format!(
+                    "Session with id {session_id} not found in {subdir}"
+                ))?;
+                return Ok(());
+            }
+            Err(err) => {
+                emit_rollout_add_tool_items_error(format!("Failed to locate session: {err}"))?;
+                return Ok(());
+            }
+        };
+
+    let (_, parsed_id) = match read_full_rollout(&rollout_path) {
+        Ok(result) => result,
+        Err(err) => {
+            emit_rollout_add_tool_items_error(format!("Failed to read rollout history: {err}"))?;
+            return Ok(());
+        }
+    };
+
+    if parsed_id != conversation_id {
+        emit_rollout_add_tool_items_error(
+            "Session id mismatch between provided id and rollout history".to_string(),
+        )?;
+        return Ok(());
+    }
+
+    let rollout_recorder =
+        match RolloutRecorder::new(&config, RolloutRecorderParams::resume(rollout_path.clone()))
+            .await
+        {
+            Ok(recorder) => recorder,
+            Err(err) => {
+                emit_rollout_add_tool_items_error(format!(
+                    "Failed to open rollout recorder: {err}"
+                ))?;
+                return Ok(());
+            }
+        };
+
+    let item_count = items.len();
+    let to_record: Vec<RolloutItem> = items.into_iter().map(RolloutItem::ResponseItem).collect();
+    if let Err(err) = rollout_recorder.append_items(&to_record).await {
+        emit_rollout_add_tool_items_error(format!("Failed to write rollout items: {err}"))?;
+        return Ok(());
+    }
+
+    if let Err(err) = rollout_recorder.flush().await {
+        emit_rollout_add_tool_items_error(format!("Failed to flush rollout items: {err}"))?;
+        return Ok(());
+    }
+
+    if let Err(err) = rollout_recorder.shutdown().await {
+        emit_rollout_add_tool_items_error(format!("Failed to shutdown rollout recorder: {err}"))?;
+        return Ok(());
+    }
+
+    let response = RolloutAddToolItemsResponse {
+        success: true,
+        error: None,
+        session_id: Some(conversation_id.to_string()),
+        rollout_path: Some(rollout_path.to_string_lossy().into_owned()),
+        item_count,
     };
     let json = serde_json::to_string_pretty(&response)?;
     println!("{json}");
@@ -2136,6 +2356,7 @@ fn init_tracing(log: &AskLog) -> Option<DefaultGuard> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codex_protocol::models::FunctionCallOutputPayload;
     use codex_protocol::protocol::SessionMeta;
     use codex_protocol::protocol::SessionMetaLine;
     use pretty_assertions::assert_eq;
@@ -2407,6 +2628,55 @@ mod tests {
         assert_eq!(subagent_session_id, "subagent");
         assert_eq!(subagent_name, "external-subagent");
         assert_eq!(call_id.as_deref(), Some("tool-call-123"));
+    }
+
+    #[test]
+    fn rollout_add_tool_items_subcommand_parses() {
+        let cli = MultitoolCli::try_parse_from([
+            "blueprintlm-codex",
+            "rollout-add-tool-items",
+            "--session-id",
+            "parent",
+            "--session-kind",
+            "subagent",
+            "--items",
+            "[]",
+        ])
+        .expect("parse");
+        let Subcommand::RolloutAddToolItems(RolloutAddToolItemsCommand {
+            session_id,
+            session_kind,
+            items,
+        }) = cli.subcommand
+        else {
+            unreachable!()
+        };
+        assert_eq!(session_id, "parent");
+        assert_eq!(session_kind, SessionKind::Subagent);
+        assert_eq!(items, "[]");
+    }
+
+    #[test]
+    fn parse_rollout_tool_items_accepts_function_call_and_output() {
+        let raw = r#"[{"type":"function_call","name":"shell_command","arguments":"{}","call_id":"call-1"},{"type":"function_call_output","call_id":"call-1","output":"done"}]"#;
+        let items = parse_rollout_tool_items(raw).expect("parse items");
+        let expected = vec![
+            ResponseItem::FunctionCall {
+                id: None,
+                name: "shell_command".to_string(),
+                arguments: "{}".to_string(),
+                call_id: "call-1".to_string(),
+            },
+            ResponseItem::FunctionCallOutput {
+                call_id: "call-1".to_string(),
+                output: FunctionCallOutputPayload {
+                    content: "done".to_string(),
+                    content_items: None,
+                    success: None,
+                },
+            },
+        ];
+        assert_eq!(items, expected);
     }
 
     #[test]
