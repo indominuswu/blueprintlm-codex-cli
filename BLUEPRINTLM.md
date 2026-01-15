@@ -38,9 +38,10 @@ from upstream `openai/codex`. This is the single source of truth.
   `subagent-sessions`, `subagent-rollout-history`, `models`, `get-rate-limits`.
 - `rollout-add-subagent-session` records a subagent session event for a parent
   rollout. It writes `SubagentSessionStarted` with `--session-id`,
-  `--session-kind` (main or subagent), `--subagent-session-id`, and
-  `--subagent-name`, and returns JSON with `success`, `error`, `session_id`,
-  `rollout_path`, `subagent_session_id`, and `subagent_name`.
+  `--session-kind` (main or subagent), `--subagent-session-id`,
+  `--subagent-name`, and optional `--call-id`, and returns JSON with `success`,
+  `error`, `session_id`, `rollout_path`, `subagent_session_id`,
+  `subagent_name`, and `call_id`.
 
 ## Session lifecycle
 - `start-session` requires `--project-id` and `--project-doc` (AGENTS.md).
@@ -83,3 +84,7 @@ from upstream `openai/codex`. This is the single source of truth.
 - Default `originator`/User-Agent prefix stays `codex_cli_rs`;
   `CODEX_INTERNAL_ORIGINATOR_OVERRIDE` exists for tests, but the default
   value should not change.
+
+# Codexをマージしたときの確認事項
+- rolloutに書き込むコマンドでは、書き込まれたJSONの形式が変更されていないか確認
+- project docにCodex由来の文字列が含まれないかを確認

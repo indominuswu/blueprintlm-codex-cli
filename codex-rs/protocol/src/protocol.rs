@@ -1867,6 +1867,8 @@ pub struct SessionConfiguredEvent {
 pub struct SubagentSessionStartedEvent {
     pub subagent_session_id: ThreadId,
     pub subagent_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
 }
 
 /// User's decision in response to an ExecApprovalRequest.

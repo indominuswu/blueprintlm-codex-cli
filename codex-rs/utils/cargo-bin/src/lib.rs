@@ -39,23 +39,15 @@ pub fn cargo_bin(name: &str) -> Result<PathBuf, CargoBinError> {
         }
     }
 
-    match assert_cmd::Command::cargo_bin(name) {
-        Ok(cmd) => {
-            let abs = absolutize_from_buck_or_cwd(PathBuf::from(cmd.get_program()))?;
-            if abs.exists() {
-                Ok(abs)
-            } else {
-                Err(CargoBinError::ResolvedPathDoesNotExist {
-                    key: "assert_cmd::Command::cargo_bin".to_owned(),
-                    path: abs,
-                })
-            }
-        }
-        Err(err) => Err(CargoBinError::NotFound {
-            name: name.to_owned(),
-            env_keys,
-            fallback: format!("assert_cmd fallback failed: {err}"),
-        }),
+    let fallback = cargo_bin_fallback_path(name)?;
+    let abs = absolutize_from_buck_or_cwd(fallback)?;
+    if abs.exists() {
+        Ok(abs)
+    } else {
+        Err(CargoBinError::ResolvedPathDoesNotExist {
+            key: "current_exe fallback".to_string(),
+            path: abs,
+        })
     }
 }
 
@@ -150,6 +142,16 @@ fn absolutize_from_buck_or_cwd(path: PathBuf) -> Result<PathBuf, CargoBinError> 
     Ok(std::env::current_dir()
         .map_err(|source| CargoBinError::CurrentDir { source })?
         .join(path))
+}
+
+fn cargo_bin_fallback_path(name: &str) -> Result<PathBuf, CargoBinError> {
+    let exe = std::env::current_exe().map_err(|source| CargoBinError::CurrentExe { source })?;
+    let mut dir = exe;
+    dir.pop();
+    if dir.ends_with("deps") {
+        dir.pop();
+    }
+    Ok(dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX)))
 }
 
 /// Best-effort attempt to find the Buck project root for the currently running

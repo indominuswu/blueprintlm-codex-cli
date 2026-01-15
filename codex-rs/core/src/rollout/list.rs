@@ -162,7 +162,7 @@ pub async fn get_conversations_in_subdir(
     model_providers: Option<&[String]>,
     default_provider: &str,
     project_id: Option<&str>,
-) -> io::Result<ConversationsPage> {
+) -> io::Result<ThreadsPage> {
     get_threads(
         codex_home,
         subdir,
@@ -187,7 +187,7 @@ pub async fn get_conversations(
     model_providers: Option<&[String]>,
     default_provider: &str,
     project_id: Option<&str>,
-) -> io::Result<ConversationsPage> {
+) -> io::Result<ThreadsPage> {
     get_conversations_in_subdir(
         codex_home,
         SESSIONS_SUBDIR,

@@ -62,12 +62,14 @@ pub(crate) async fn get_user_instructions(
         }
     };
 
-    let skills_section = skills.and_then(render_skills_section);
-    if let Some(skills_section) = skills_section {
-        if !output.is_empty() {
-            output.push_str("\n\n");
+    if config.project_doc_override.is_none() {
+        let skills_section = skills.and_then(render_skills_section);
+        if let Some(skills_section) = skills_section {
+            if !output.is_empty() {
+                output.push_str("\n\n");
+            }
+            output.push_str(&skills_section);
         }
-        output.push_str(&skills_section);
     }
 
     if config.features.enabled(Feature::HierarchicalAgents) {
@@ -254,6 +256,7 @@ mod tests {
     use super::*;
     use crate::config::ConfigBuilder;
     use crate::skills::load_skills;
+    use pretty_assertions::assert_eq;
     use std::fs;
     use std::path::PathBuf;
     use tempfile::TempDir;
@@ -418,7 +421,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         fs::write(tmp.path().join("AGENTS.md"), "from disk").unwrap();
 
-        let mut cfg = make_config(&tmp, 4096, None);
+        let mut cfg = make_config(&tmp, 4096, None).await;
         cfg.project_doc_override = Some("override doc".to_string());
 
         let res = read_project_docs(&cfg)
@@ -433,7 +436,7 @@ mod tests {
     async fn project_doc_override_respects_limit() {
         let tmp = tempfile::tempdir().expect("tempdir");
 
-        let mut cfg = make_config(&tmp, 4, None);
+        let mut cfg = make_config(&tmp, 4, None).await;
         cfg.project_doc_override = Some("abcdef".to_string());
 
         let res = read_project_docs(&cfg)
@@ -442,6 +445,24 @@ mod tests {
             .expect("override expected");
 
         assert_eq!(res, "abcd");
+    }
+
+    #[tokio::test]
+    async fn project_doc_override_skips_skills_section() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut cfg = make_config(&tmp, 4096, None).await;
+        cfg.project_doc_override = Some("override doc".to_string());
+        create_skill(cfg.codex_home.clone(), "linting", "run clippy");
+
+        let skills = load_skills(&cfg);
+        let res = get_user_instructions(
+            &cfg,
+            skills.errors.is_empty().then_some(skills.skills.as_slice()),
+        )
+        .await
+        .expect("instructions expected");
+
+        assert_eq!(res, "override doc");
     }
 
     /// When both the repository root and the working directory contain

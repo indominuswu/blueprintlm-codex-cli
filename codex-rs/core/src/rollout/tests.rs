@@ -353,6 +353,7 @@ async fn test_list_conversations_from_subagent_dir() {
         "cwd": ".",
         "originator": "test_originator",
         "cli_version": "test_version",
+        "source": "vscode",
         "model_provider": "test-provider",
     })];
     let head_1 = vec![serde_json::json!( {
@@ -362,6 +363,7 @@ async fn test_list_conversations_from_subagent_dir() {
         "cwd": ".",
         "originator": "test_originator",
         "cli_version": "test_version",
+        "source": "vscode",
         "model_provider": "test-provider",
     })];
 

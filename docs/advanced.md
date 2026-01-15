@@ -33,7 +33,7 @@ The output includes `success`, `error`, `session_id`, `rollout_path`, and `histo
 To append a subagent session marker to a parent session's rollout file, use:
 
 ```
-blueprintlm-codex rollout-add-subagent-session --session-id <PARENT_SESSION_ID> --session-kind main --subagent-session-id <SUBAGENT_SESSION_ID> --subagent-name <SUBAGENT_NAME>
+blueprintlm-codex rollout-add-subagent-session --session-id <PARENT_SESSION_ID> --session-kind main --subagent-session-id <SUBAGENT_SESSION_ID> --subagent-name <SUBAGENT_NAME> --call-id <CALL_ID>
 ```
 
 ## Model Context Protocol (MCP)

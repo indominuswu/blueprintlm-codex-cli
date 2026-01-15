@@ -57,6 +57,6 @@ If you already have the combined `AGENTS.md` contents on hand, you can pass them
 cat AGENTS.md | blueprintlm-codex start-session --project-id my-project --project-doc -
 ```
 
-The `start-session` command requires `--project-doc` and ignores other `AGENTS.md` files when you provide it.
+The `start-session` command requires `--project-doc` and ignores other `AGENTS.md` files when you provide it. The provided text is used verbatim, without appending the auto-generated skills section.
 
 For additional configuration details, see [Config](../docs/config.md) and revisit the [Memory with AGENTS.md guide](../docs/getting-started.md#memory-with-agentsmd) for practical usage tips.

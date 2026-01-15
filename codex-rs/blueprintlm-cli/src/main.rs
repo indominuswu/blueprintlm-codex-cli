@@ -12,29 +12,27 @@ use codex_cli::login::run_logout;
 use codex_common::CliConfigOverrides;
 use codex_core::AuthManager;
 use codex_core::CodexAuth;
-use codex_core::ConversationManager;
 use codex_core::ModelClient;
 use codex_core::Prompt;
 use codex_core::ResponseEvent;
 use codex_core::RolloutRecorder;
+use codex_core::ThreadManager;
 use codex_core::ToolsConfig;
 use codex_core::ToolsConfigParams;
 use codex_core::blueprintlm_default_tool_specs_from_str;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
-use codex_core::features::Feature;
 use codex_core::models_manager::manager::ModelsManager;
 use codex_core::rollout::SESSIONS_SUBDIR;
 use codex_core::rollout::SUBAGENT_SESSIONS_SUBDIR;
-use codex_core::rollout::find_conversation_path_by_id_str;
 use codex_core::rollout::list::Cursor as SessionsCursor;
 use codex_core::rollout::list::find_conversation_path_by_id_str_in_subdir;
 use codex_core::rollout::list::get_conversations;
 use codex_core::rollout::list::get_conversations_in_subdir;
 use codex_core::rollout::recorder::RolloutRecorderParams;
 use codex_core::terminal;
-use codex_otel::otel_manager::OtelManager;
-use codex_protocol::ConversationId;
+use codex_otel::OtelManager;
+use codex_protocol::ThreadId;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
@@ -253,6 +251,10 @@ struct RolloutAddSubagentSessionCommand {
     /// Subagent name to record.
     #[arg(long = "subagent-name", value_name = "SUBAGENT_NAME")]
     subagent_name: String,
+
+    /// Tool call id that initiated the subagent session.
+    #[arg(long = "call-id", value_name = "CALL_ID")]
+    call_id: Option<String>,
 }
 
 #[derive(Debug, Parser)]
@@ -494,12 +496,14 @@ async fn cli_main(_codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<(
             session_kind,
             subagent_session_id,
             subagent_name,
+            call_id,
         }) => {
             run_rollout_add_subagent_session(
                 session_id,
                 session_kind,
                 subagent_session_id,
                 subagent_name,
+                call_id,
                 root_config_overrides,
             )
             .await?;
@@ -679,6 +683,7 @@ struct RolloutAddSubagentSessionResponse {
     rollout_path: Option<String>,
     subagent_session_id: Option<String>,
     subagent_name: Option<String>,
+    call_id: Option<String>,
 }
 
 fn emit_error(error: String, pretty: bool) -> anyhow::Result<()> {
@@ -709,7 +714,7 @@ fn emit_stream_event(writer: &mut impl Write, event: AskStreamEvent) -> anyhow::
 
 fn response_items_from_history(
     history: &InitialHistory,
-) -> anyhow::Result<(ConversationId, Vec<ResponseItem>)> {
+) -> anyhow::Result<(ThreadId, Vec<ResponseItem>)> {
     match history {
         InitialHistory::Resumed(resumed) => {
             let mut items = Vec::new();
@@ -764,20 +769,21 @@ fn emit_rollout_add_subagent_session_error(error: String) -> anyhow::Result<()> 
         rollout_path: None,
         subagent_session_id: None,
         subagent_name: None,
+        call_id: None,
     };
     let json = serde_json::to_string_pretty(&response)?;
     println!("{json}");
     Ok(())
 }
 
-fn read_full_rollout(path: &Path) -> io::Result<(Vec<RolloutLine>, ConversationId)> {
+fn read_full_rollout(path: &Path) -> io::Result<(Vec<RolloutLine>, ThreadId)> {
     let text = fs::read_to_string(path)?;
     if text.trim().is_empty() {
         return Err(io::Error::other("empty session file"));
     }
 
     let mut history: Vec<RolloutLine> = Vec::new();
-    let mut conversation_id: Option<ConversationId> = None;
+    let mut conversation_id: Option<ThreadId> = None;
     for line in text.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -811,7 +817,8 @@ async fn find_rollout_path_for_session(
     codex_home: &Path,
     session_id: &str,
 ) -> anyhow::Result<Option<PathBuf>> {
-    let path = find_conversation_path_by_id_str(codex_home, session_id).await?;
+    let path =
+        find_conversation_path_by_id_str_in_subdir(codex_home, SESSIONS_SUBDIR, session_id).await?;
     if path.is_some() {
         return Ok(path);
     }
@@ -922,14 +929,14 @@ async fn run_ask(resolved_ask_input: ResolvedAskInput, params: AskRunParams) -> 
         true,
         config.cli_auth_credentials_store_mode,
     );
-    let models_manager = ModelsManager::new(auth_manager.clone());
+    let models_manager = ModelsManager::new(config.codex_home.clone(), auth_manager.clone());
     let Some(model) = config.model.as_deref() else {
         emit_error("model not configured".to_string(), !stream_output)?;
         return Ok(());
     };
     let model_info = models_manager.construct_model_info(model, &config).await;
     let model_info_for_client = model_info.clone();
-    let conversation_id = match ConversationId::from_string(&session_id) {
+    let conversation_id = match ThreadId::from_string(&session_id) {
         Ok(id) => id,
         Err(err) => {
             emit_error(err.to_string(), !stream_output)?;
@@ -1030,7 +1037,7 @@ async fn run_ask(resolved_ask_input: ResolvedAskInput, params: AskRunParams) -> 
                 None
             }
         };
-    let auth = auth_manager.auth();
+    let auth = auth_manager.auth().await;
     let otel_event_manager = OtelManager::new(
         conversation_id,
         model,
@@ -1142,8 +1149,7 @@ async fn run_ask(resolved_ask_input: ResolvedAskInput, params: AskRunParams) -> 
         }
     };
     let tool_count = tools.len();
-    let parallel_tool_calls = model_info.supports_parallel_tool_calls
-        && config.features.enabled(Feature::ParallelToolCalls);
+    let parallel_tool_calls = model_info.supports_parallel_tool_calls;
     prompt.set_tools(tools);
     prompt.set_parallel_tool_calls(parallel_tool_calls);
     log_line(
@@ -1511,6 +1517,9 @@ async fn run_ask(resolved_ask_input: ResolvedAskInput, params: AskRunParams) -> 
                             }
                         }
                     }
+                    ResponseEvent::ModelsEtag(etag) => {
+                        log_line(&mut ask_log, format!("models etag update: {etag}"));
+                    }
                 }
             }
             Err(err) => {
@@ -1611,7 +1620,7 @@ async fn run_validate_tools(
         true,
         config.cli_auth_credentials_store_mode,
     );
-    let models_manager = ModelsManager::new(auth_manager);
+    let models_manager = ModelsManager::new(config.codex_home.clone(), auth_manager);
     let Some(model) = config.model.as_deref() else {
         let response = ValidateToolsResponse {
             success: false,
@@ -1670,6 +1679,7 @@ async fn run_rollout_add_subagent_session(
     session_kind: SessionKind,
     subagent_session_id: String,
     subagent_name: String,
+    call_id: Option<String>,
     root_config_overrides: CliConfigOverrides,
 ) -> anyhow::Result<()> {
     let cli_overrides = root_config_overrides
@@ -1681,7 +1691,7 @@ async fn run_rollout_add_subagent_session(
     )
     .await?;
 
-    let conversation_id = match ConversationId::from_string(&session_id) {
+    let conversation_id = match ThreadId::from_string(&session_id) {
         Ok(id) => id,
         Err(err) => {
             emit_rollout_add_subagent_session_error(err.to_string())?;
@@ -1689,7 +1699,7 @@ async fn run_rollout_add_subagent_session(
         }
     };
 
-    let subagent_id = match ConversationId::from_string(&subagent_session_id) {
+    let subagent_id = match ThreadId::from_string(&subagent_session_id) {
         Ok(id) => id,
         Err(err) => {
             emit_rollout_add_subagent_session_error(err.to_string())?;
@@ -1753,6 +1763,7 @@ async fn run_rollout_add_subagent_session(
     let event = EventMsg::SubagentSessionStarted(SubagentSessionStartedEvent {
         subagent_session_id: subagent_id,
         subagent_name: subagent_name.clone(),
+        call_id: call_id.clone(),
     });
 
     if let Err(err) = rollout_recorder
@@ -1782,6 +1793,7 @@ async fn run_rollout_add_subagent_session(
         rollout_path: Some(rollout_path.to_string_lossy().into_owned()),
         subagent_session_id: Some(subagent_id.to_string()),
         subagent_name: Some(subagent_name),
+        call_id,
     };
     let json = serde_json::to_string_pretty(&response)?;
     println!("{json}");
@@ -1802,7 +1814,7 @@ async fn run_rollout_history_in_subdir(
     )
     .await?;
 
-    let conversation_id = match ConversationId::from_string(&session_id) {
+    let conversation_id = match ThreadId::from_string(&session_id) {
         Ok(id) => id,
         Err(err) => {
             emit_rollout_history_error(err.to_string())?;
@@ -1942,15 +1954,15 @@ async fn run_start_session_with_source(
             .await?;
     config.user_instructions = None;
     config.project_doc_override = Some(project_doc_override);
-    config.features.disable(Feature::Skills);
 
     let auth_manager = AuthManager::shared(
         config.codex_home.clone(),
         true,
         config.cli_auth_credentials_store_mode,
     );
-    let conversation_manager = ConversationManager::new(auth_manager, session_source);
-    let response = match conversation_manager.new_conversation(config).await {
+    let thread_manager =
+        ThreadManager::new(config.codex_home.clone(), auth_manager, session_source);
+    let response = match thread_manager.start_thread(config).await {
         Ok(new_conversation) => StartSessionResponse {
             success: true,
             session: Some(new_conversation.session_configured),
@@ -1984,11 +1996,11 @@ async fn run_get_rate_limits(root_config_overrides: CliConfigOverrides) -> anyho
         true,
         config.cli_auth_credentials_store_mode,
     );
-    let Some(auth) = auth_manager.auth() else {
+    let Some(auth) = auth_manager.auth().await else {
         anyhow::bail!("Not logged in; run `blueprintlm-codex login` first.");
     };
 
-    let client = BackendClient::from_auth(config.chatgpt_base_url.clone(), &auth).await?;
+    let client = BackendClient::from_auth(config.chatgpt_base_url.clone(), &auth)?;
     let snapshot = client.get_rate_limits().await?;
     let json = serde_json::to_string_pretty(&snapshot)?;
     println!("{json}");
@@ -2010,7 +2022,7 @@ async fn run_list_models(root_config_overrides: CliConfigOverrides) -> anyhow::R
         true,
         config.cli_auth_credentials_store_mode,
     );
-    let models_manager = ModelsManager::new(auth_manager);
+    let models_manager = ModelsManager::new(config.codex_home.clone(), auth_manager);
     let presets = models_manager.list_models(&config).await;
     let json = serde_json::to_string_pretty(&presets)?;
     println!("{json}");
@@ -2022,7 +2034,7 @@ struct AskLog {
     path: PathBuf,
 }
 
-fn create_ask_log_file(base_dir: &Path, conversation_id: &ConversationId) -> Option<AskLog> {
+fn create_ask_log_file(base_dir: &Path, conversation_id: &ThreadId) -> Option<AskLog> {
     let now = OffsetDateTime::now_utc();
     let log_dir = base_dir
         .join("log")
@@ -2376,6 +2388,8 @@ mod tests {
             "subagent",
             "--subagent-name",
             "external-subagent",
+            "--call-id",
+            "tool-call-123",
         ])
         .expect("parse");
         let Subcommand::RolloutAddSubagentSession(RolloutAddSubagentSessionCommand {
@@ -2383,6 +2397,7 @@ mod tests {
             session_kind,
             subagent_session_id,
             subagent_name,
+            call_id,
         }) = cli.subcommand
         else {
             unreachable!()
@@ -2391,6 +2406,7 @@ mod tests {
         assert_eq!(session_kind, SessionKind::Main);
         assert_eq!(subagent_session_id, "subagent");
         assert_eq!(subagent_name, "external-subagent");
+        assert_eq!(call_id.as_deref(), Some("tool-call-123"));
     }
 
     #[test]
@@ -2428,7 +2444,7 @@ mod tests {
 
     #[test]
     fn read_full_rollout_parses_conversation_id() {
-        let conversation_id = ConversationId::new();
+        let conversation_id = ThreadId::new();
         let timestamp = "2024-01-02T03:04:05.000Z".to_string();
         let meta_line = RolloutLine {
             timestamp: timestamp.clone(),
